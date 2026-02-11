@@ -16,8 +16,13 @@ let package = Package(
             publicHeadersPath: "include"
         ),
         .target(
+            name: "AXPTranslationBridge",
+            path: "Sources/AXPTranslationBridge",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "SimulatorKit",
-            dependencies: ["IndigoCTypes"],
+            dependencies: ["IndigoCTypes", "AXPTranslationBridge"],
             path: "Sources/SimulatorKit"
         ),
         .executableTarget(

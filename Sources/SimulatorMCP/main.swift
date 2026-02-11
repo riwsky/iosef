@@ -1,7 +1,6 @@
 import Foundation
 import MCP
 import SimulatorKit
-@preconcurrency import ApplicationServices
 
 // MARK: - Configuration
 
@@ -56,9 +55,9 @@ func ensureAbsolutePath(_ filePath: String) -> String {
 
 // MARK: - Simulator cache
 
-/// Caches device info and coordinate translators to avoid redundant simctl spawns.
-/// Device info (UDID + name) is cached for 60s. The CoordinateTranslator is cached
-/// for 10s since the Simulator window can be moved/resized.
+/// Caches device info, AXP accessibility bridge, and HID clients.
+/// Device info (UDID + name) is cached for 60s. The AXPAccessibilityBridge
+/// is cached per UDID (it holds a SimDevice reference).
 actor SimulatorCache {
     static let shared = SimulatorCache()
 
@@ -68,18 +67,11 @@ actor SimulatorCache {
         let timestamp: ContinuousClock.Instant
     }
 
-    private struct TranslatorCache {
-        let translator: CoordinateTranslator
-        let iosAppElement: AccessibilityElement
-        let timestamp: ContinuousClock.Instant
-    }
-
     private var deviceCache: DeviceCache?
-    private var translatorCache: [String: TranslatorCache] = [:]
+    private var axpBridges: [String: AXPAccessibilityBridge] = [:]
     private var hidClients: [String: IndigoHIDClient] = [:]
 
     private let deviceTTL: Duration = .seconds(60)
-    private let translatorTTL: Duration = .seconds(10)
 
     /// Resolves device UDID, using cache when possible.
     /// Delegates to SimCtlClient.resolveDeviceID which checks:
@@ -101,74 +93,14 @@ actor SimulatorCache {
         return resolvedUdid
     }
 
-    /// Gets device name, using cache when possible (avoids a second simctl spawn).
-    func getDeviceName(udid: String) async throws -> String? {
-        let now = ContinuousClock.now
-        if let cached = deviceCache,
-           cached.udid == udid,
-           now - cached.timestamp < deviceTTL {
-            return cached.name
+    /// Gets or creates an AXPAccessibilityBridge for the given UDID.
+    func getAXPBridge(udid: String) throws -> AXPAccessibilityBridge {
+        if let cached = axpBridges[udid] {
+            return cached
         }
-
-        // Single simctl call to get both UDID and name
-        let device = try await SimCtlClient.getBootedDevice()
-        deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
-        if device.udid == udid {
-            return device.name
-        }
-
-        // UDID doesn't match booted device — fall back to full lookup
-        return try await SimCtlClient.getDeviceName(udid: udid)
-    }
-
-    /// Gets the CoordinateTranslator, using cache when possible.
-    func getTranslator(udid: String) async throws -> CoordinateTranslator {
-        let now = ContinuousClock.now
-        if let cached = translatorCache[udid],
-           now - cached.timestamp < translatorTTL {
-            return cached.translator
-        }
-
-        let deviceName = try await getDeviceName(udid: udid)
-
-        guard SimulatorFinder.findSimulator() != nil else {
-            throw MCPToolError.simulatorNotRunning
-        }
-
-        guard let iosAppElement = SimulatorFinder.findIOSAppElement(forUDID: udid, deviceName: deviceName) else {
-            throw MCPToolError.iosAppNotFound
-        }
-
-        guard let contentFrame = iosAppElement.frame else {
-            throw MCPToolError.cannotGetFrame
-        }
-
-        let translator = CoordinateTranslator(
-            contentFrame: contentFrame,
-            deviceSize: contentFrame.size
-        )
-
-        translatorCache[udid] = TranslatorCache(
-            translator: translator,
-            iosAppElement: iosAppElement,
-            timestamp: now
-        )
-        return translator
-    }
-
-    /// Gets the cached iOS app element (from translator lookup), or finds it fresh.
-    func getIOSAppElement(udid: String) async throws -> AccessibilityElement {
-        // Try getting it from translator cache (which does the same AX lookup)
-        _ = try await getTranslator(udid: udid)
-        if let cached = translatorCache[udid] {
-            return cached.iosAppElement
-        }
-        // Should not reach here, but fall back
-        let deviceName = try await getDeviceName(udid: udid)
-        guard let element = SimulatorFinder.findIOSAppElement(forUDID: udid, deviceName: deviceName) else {
-            throw MCPToolError.iosAppNotFound
-        }
-        return element
+        let bridge = try AXPAccessibilityBridge(udid: udid)
+        axpBridges[udid] = bridge
+        return bridge
     }
 
     /// Gets or creates an IndigoHIDClient for the given UDID.
@@ -184,33 +116,18 @@ actor SimulatorCache {
 
     func invalidate() {
         deviceCache = nil
-        translatorCache.removeAll()
+        axpBridges.removeAll()
         hidClients.removeAll()
     }
 }
 
-// MARK: - Coordinate translation helper (legacy, now delegates to cache)
-
-func makeCoordinateTranslator(udid: String) async throws -> CoordinateTranslator {
-    try await SimulatorCache.shared.getTranslator(udid: udid)
-}
-
 enum MCPToolError: Error, LocalizedError {
     case simulatorNotRunning
-    case iosAppNotFound
-    case cannotGetFrame
-    case accessibilityPermissionDenied
 
     var errorDescription: String? {
         switch self {
         case .simulatorNotRunning:
             return "iOS Simulator is not running"
-        case .iosAppNotFound:
-            return "Could not find iOS app content inside the simulator"
-        case .cannotGetFrame:
-            return "Could not determine simulator content frame"
-        case .accessibilityPermissionDenied:
-            return PermissionChecker.permissionErrorMessage()
         }
     }
 }
@@ -522,23 +439,15 @@ func handleOpenSimulator() async throws -> CallTool.Result {
 }
 
 func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    guard PermissionChecker.hasPermission() else {
-        throw MCPToolError.accessibilityPermissionDenied
-    }
-
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let iosAppElement = try await SimulatorCache.shared.getIOSAppElement(udid: udid)
+    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
 
-    let treeNode = TreeSerializer.serialize(iosAppElement)
-    let json = try TreeSerializer.toJSON([treeNode])
+    let nodes = try axpBridge.accessibilityElements()
+    let json = try TreeSerializer.toJSON(nodes)
     return .init(content: [.text(json)])
 }
 
 func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    guard PermissionChecker.hasPermission() else {
-        throw MCPToolError.accessibilityPermissionDenied
-    }
-
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
     guard let x = extractDouble(params.arguments?["x"]),
@@ -546,17 +455,8 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
         return .init(content: [.text("Missing required parameters: x, y")], isError: true)
     }
 
-    let translator = try await makeCoordinateTranslator(udid: udid)
-    let screenPoint = translator.toScreenCoordinate(iosX: CGFloat(x), iosY: CGFloat(y))
-
-    // Use the cached iosAppElement (scoped to the correct simulator window)
-    // instead of the app-level element, to avoid hitting the wrong sim in multi-sim setups
-    let iosAppElement = try await SimulatorCache.shared.getIOSAppElement(udid: udid)
-    guard let hitElement = iosAppElement.hitTest(x: screenPoint.x, y: screenPoint.y) else {
-        return .init(content: [.text("No element found at coordinates (\(x), \(y))")])
-    }
-
-    let node = TreeSerializer.serialize(hitElement)
+    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
+    let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
     let json = try TreeSerializer.toJSON(node)
     return .init(content: [.text(json)])
 }
@@ -624,13 +524,8 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
 
 func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let deviceName = try await SimulatorCache.shared.getDeviceName(udid: udid)
 
-    guard let windowID = SimulatorWindowResolver.findWindowID(deviceName: deviceName) else {
-        throw ScreenCapture.CaptureError.simulatorWindowNotFound
-    }
-
-    let capture = try ScreenCapture.captureSimulatorWindow(windowID: windowID)
+    let capture = try ScreenCapture.captureSimulator(udid: udid)
 
     return .init(content: [
         .image(data: capture.base64, mimeType: "image/jpeg", metadata: nil),

@@ -73,36 +73,6 @@ public struct TreeNode: Codable, Sendable {
 /// Converts accessibility elements into serializable tree nodes.
 public enum TreeSerializer {
 
-    /// Recursively converts an AccessibilityElement into a TreeNode.
-    public static func serialize(_ element: AccessibilityElement) -> TreeNode {
-        let childElements = element.childrenInNavigationOrder ?? element.children
-        let childNodes = childElements.map { serialize($0) }
-
-        let frameInfo: TreeNode.FrameInfo?
-        if let frame = element.frame {
-            frameInfo = TreeNode.FrameInfo(
-                x: Double(frame.origin.x),
-                y: Double(frame.origin.y),
-                width: Double(frame.size.width),
-                height: Double(frame.size.height)
-            )
-        } else {
-            frameInfo = nil
-        }
-
-        return TreeNode(
-            role: element.role,
-            label: element.label,
-            title: element.title,
-            value: element.value,
-            identifier: element.identifier,
-            hint: element.hint,
-            traits: element.traits,
-            frame: frameInfo,
-            children: childNodes
-        )
-    }
-
     /// Serializes a tree node array to a pretty-printed JSON string.
     public static func toJSON(_ nodes: [TreeNode]) throws -> String {
         let encoder = JSONEncoder()

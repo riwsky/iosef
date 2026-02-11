@@ -2,85 +2,55 @@ import Foundation
 import CoreGraphics
 import ImageIO
 
-/// Captures screenshots of the iOS Simulator window natively.
+/// Captures screenshots of the iOS Simulator via simctl.
 public enum ScreenCapture {
 
-    /// Captures the simulator window as a JPEG and returns base64-encoded data.
-    public static func captureSimulatorWindow(windowID: CGWindowID) throws -> (base64: String, width: Int, height: Int) {
-        guard let image = CGWindowListCreateImage(
-            .null,
-            .optionIncludingWindow,
-            windowID,
-            [.boundsIgnoreFraming, .nominalResolution]
-        ) else {
+    /// Captures the simulator screen as a JPEG and returns base64-encoded data.
+    /// Uses `xcrun simctl io <udid> screenshot` which captures the simulator framebuffer
+    /// directly — works even when the Simulator window is hidden or minimized.
+    public static func captureSimulator(udid: String) throws -> (base64: String, width: Int, height: Int) {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sim_screenshot_\(ProcessInfo.processInfo.processIdentifier).jpg")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = ["simctl", "io", udid, "screenshot", "--type=jpeg", "--", tempURL.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
             throw CaptureError.windowCaptureFailed
         }
 
-        let jpegData = try encodeJPEG(image: image, quality: 0.8)
+        let jpegData = try Data(contentsOf: tempURL)
         let base64 = jpegData.base64EncodedString()
 
-        return (base64: base64, width: image.width, height: image.height)
-    }
-
-    /// Finds the simulator window ID by searching CGWindowList.
-    public static func findSimulatorWindowID() -> CGWindowID? {
-        guard let windowList = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            return nil
+        // Read dimensions from the JPEG data
+        var width = 0
+        var height = 0
+        if let source = CGImageSourceCreateWithData(jpegData as CFData, nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
+            width = properties[kCGImagePropertyPixelWidth as String] as? Int ?? 0
+            height = properties[kCGImagePropertyPixelHeight as String] as? Int ?? 0
         }
 
-        for window in windowList {
-            guard let ownerName = window[kCGWindowOwnerName as String] as? String,
-                  ownerName == "Simulator",
-                  let layer = window[kCGWindowLayer as String] as? Int,
-                  layer == 0,
-                  let windowID = window[kCGWindowNumber as String] as? CGWindowID
-            else { continue }
-            return windowID
-        }
-
-        return nil
-    }
-
-    /// Encodes a CGImage as JPEG data.
-    private static func encodeJPEG(image: CGImage, quality: Double) throws -> Data {
-        let mutableData = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            mutableData as CFMutableData,
-            "public.jpeg" as CFString,
-            1,
-            nil
-        ) else {
-            throw CaptureError.jpegEncodingFailed
-        }
-
-        let options: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: quality
-        ]
-        CGImageDestinationAddImage(destination, image, options as CFDictionary)
-
-        guard CGImageDestinationFinalize(destination) else {
-            throw CaptureError.jpegEncodingFailed
-        }
-
-        return mutableData as Data
+        return (base64: base64, width: width, height: height)
     }
 
     public enum CaptureError: Error, LocalizedError {
         case windowCaptureFailed
         case jpegEncodingFailed
-        case simulatorWindowNotFound
 
         public var errorDescription: String? {
             switch self {
             case .windowCaptureFailed:
-                return "Failed to capture simulator window"
+                return "Failed to capture simulator screenshot"
             case .jpegEncodingFailed:
                 return "Failed to encode image as JPEG"
-            case .simulatorWindowNotFound:
-                return "Simulator window not found on screen"
             }
         }
     }

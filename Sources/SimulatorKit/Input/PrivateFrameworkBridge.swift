@@ -34,7 +34,9 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     private var simulatorKitHandle: UnsafeMutableRawPointer?
     private var coreSimulatorHandle: UnsafeMutableRawPointer?
+    private var axpHandle: UnsafeMutableRawPointer?
     private var loaded = false
+    private var axpLoaded = false
     private let lock = NSLock()
 
     // MARK: - Resolved function pointers from SimulatorKit
@@ -206,6 +208,89 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         _ = Unmanaged.passUnretained(allocated)
 
         return client
+    }
+
+    // MARK: - AccessibilityPlatformTranslation Framework
+
+    private static let axpPath =
+        "/System/Library/PrivateFrameworks/AccessibilityPlatformTranslation.framework/AccessibilityPlatformTranslation"
+
+    /// Loads the AccessibilityPlatformTranslation private framework. Must be called before using AXP APIs.
+    public func ensureAXPLoaded() throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !axpLoaded else { return }
+
+        // CoreSimulator must be loaded first (for SimDevice)
+        try ensureLoaded()
+
+        guard let handle = dlopen(Self.axpPath, RTLD_LAZY) else {
+            throw PrivateFrameworkError.frameworkNotFound(Self.axpPath)
+        }
+        axpHandle = handle
+        axpLoaded = true
+    }
+
+    /// Returns AXPTranslator.sharedInstance via objc runtime.
+    public func getAXPTranslatorSharedInstance() throws -> AnyObject {
+        try ensureAXPLoaded()
+
+        guard let translatorClass: AnyClass = objc_lookUpClass("AXPTranslator") else {
+            throw PrivateFrameworkError.classNotFound("AXPTranslator")
+        }
+
+        let sel = NSSelectorFromString("sharedInstance")
+        guard let method = class_getClassMethod(translatorClass, sel) else {
+            throw PrivateFrameworkError.classNotFound("AXPTranslator.sharedInstance")
+        }
+
+        typealias SharedFn = @convention(c) (AnyObject, Selector) -> AnyObject
+        let imp = method_getImplementation(method)
+        let getShared = unsafeBitCast(imp, to: SharedFn.self)
+        return getShared(translatorClass, sel)
+    }
+
+    /// Calls -[SimDevice sendAccessibilityRequestAsync:completionQueue:completionHandler:] via IMP.
+    /// Blocks the calling thread until the async response arrives.
+    public func sendAccessibilityRequest(_ request: AnyObject, toDevice device: AnyObject) throws -> AnyObject {
+        let sel = NSSelectorFromString("sendAccessibilityRequestAsync:completionQueue:completionHandler:")
+        guard let method = class_getInstanceMethod(type(of: device as AnyObject), sel) else {
+            throw PrivateFrameworkError.classNotFound("SimDevice.sendAccessibilityRequestAsync:completionQueue:completionHandler:")
+        }
+
+        typealias SendFn = @convention(c) (AnyObject, Selector, AnyObject, DispatchQueue, Any) -> Void
+        let imp = method_getImplementation(method)
+        let send = unsafeBitCast(imp, to: SendFn.self)
+
+        let group = DispatchGroup()
+        group.enter()
+
+        let queue = DispatchQueue(label: "com.simulator-mcp.accessibility.callback")
+        var result: AnyObject?
+
+        let completionBlock: @convention(block) (AnyObject?) -> Void = { response in
+            result = response
+            group.leave()
+        }
+        let completionObj: Any = completionBlock
+
+        send(device, sel, request, queue, completionObj)
+        group.wait()
+
+        if let response = result {
+            return response
+        }
+
+        // Return an empty response if nil came back
+        guard let responseClass: AnyClass = objc_lookUpClass("AXPTranslatorResponse") else {
+            throw PrivateFrameworkError.classNotFound("AXPTranslatorResponse")
+        }
+        let emptySel = NSSelectorFromString("emptyResponse")
+        guard let emptyResult = (responseClass as AnyObject).perform(emptySel)?.takeUnretainedValue() else {
+            throw PrivateFrameworkError.classNotFound("AXPTranslatorResponse.emptyResponse")
+        }
+        return emptyResult
     }
 
     /// Sends an IndigoMessage to the HID client.
