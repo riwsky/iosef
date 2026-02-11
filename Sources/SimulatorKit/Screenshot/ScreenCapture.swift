@@ -2,53 +2,72 @@ import Foundation
 import CoreGraphics
 import ImageIO
 
-/// Captures screenshots of the iOS Simulator via simctl.
+/// Captures screenshots of the iOS Simulator via `xcrun simctl io`.
 public enum ScreenCapture {
 
-    /// Captures the simulator screen as a JPEG and returns base64-encoded data.
-    /// Uses `xcrun simctl io <udid> screenshot` which captures the simulator framebuffer
-    /// directly — works even when the Simulator window is hidden or minimized.
+    /// Captures the simulator screen as a JPEG via simctl and returns base64-encoded data.
     public static func captureSimulator(udid: String) throws -> (base64: String, width: Int, height: Int) {
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sim_screenshot_\(ProcessInfo.processInfo.processIdentifier).jpg")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let tempPath = "/tmp/ios-sim-mcp-\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: tempPath) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["simctl", "io", udid, "screenshot", "--type=jpeg", "--", tempURL.path]
+        process.arguments = ["simctl", "io", udid, "screenshot", "--type=png", "--", tempPath]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-
         try process.run()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            throw CaptureError.windowCaptureFailed
+            throw CaptureError.simctlFailed(exitCode: process.terminationStatus)
         }
 
-        let jpegData = try Data(contentsOf: tempURL)
+        let pngData = try Data(contentsOf: URL(fileURLWithPath: tempPath))
+
+        // Load PNG as CGImage for dimensions + JPEG re-encoding
+        guard let imageSource = CGImageSourceCreateWithData(pngData as CFData, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            throw CaptureError.jpegEncodingFailed
+        }
+
+        let jpegData = try encodeJPEG(image: cgImage, quality: 0.8)
         let base64 = jpegData.base64EncodedString()
 
-        // Read dimensions from the JPEG data
-        var width = 0
-        var height = 0
-        if let source = CGImageSourceCreateWithData(jpegData as CFData, nil),
-           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
-            width = properties[kCGImagePropertyPixelWidth as String] as? Int ?? 0
-            height = properties[kCGImagePropertyPixelHeight as String] as? Int ?? 0
+        return (base64: base64, width: cgImage.width, height: cgImage.height)
+    }
+
+    /// Encodes a CGImage as JPEG data.
+    private static func encodeJPEG(image: CGImage, quality: Double) throws -> Data {
+        let mutableData = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            mutableData as CFMutableData,
+            "public.jpeg" as CFString,
+            1,
+            nil
+        ) else {
+            throw CaptureError.jpegEncodingFailed
         }
 
-        return (base64: base64, width: width, height: height)
+        let options: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality
+        ]
+        CGImageDestinationAddImage(destination, image, options as CFDictionary)
+
+        guard CGImageDestinationFinalize(destination) else {
+            throw CaptureError.jpegEncodingFailed
+        }
+
+        return mutableData as Data
     }
 
     public enum CaptureError: Error, LocalizedError {
-        case windowCaptureFailed
+        case simctlFailed(exitCode: Int32)
         case jpegEncodingFailed
 
         public var errorDescription: String? {
             switch self {
-            case .windowCaptureFailed:
-                return "Failed to capture simulator screenshot"
+            case .simctlFailed(let code):
+                return "simctl screenshot failed with exit code \(code)"
             case .jpegEncodingFailed:
                 return "Failed to encode image as JPEG"
             }

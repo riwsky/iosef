@@ -91,6 +91,92 @@ public final class IndigoHIDClient: @unchecked Sendable {
         bridge.sendMessage(data, to: client)
     }
 
+    // MARK: - Keyboard Input
+
+    /// Types a string by sending per-character HID keyboard events.
+    public func typeText(_ text: String) {
+        for char in text {
+            guard let (keyCode, needsShift) = Self.hidKeyCode(for: char) else { continue }
+
+            if needsShift {
+                sendKeyEvent(keyCode: 0xE1, direction: IndigoDirection.down)  // Left Shift down
+            }
+            sendKeyEvent(keyCode: keyCode, direction: IndigoDirection.down)
+            sendKeyEvent(keyCode: keyCode, direction: IndigoDirection.up)
+            if needsShift {
+                sendKeyEvent(keyCode: 0xE1, direction: IndigoDirection.up)    // Left Shift up
+            }
+
+            usleep(10_000)  // 10ms between characters
+        }
+    }
+
+    /// Sends a single HID keyboard event via IndigoHIDMessageForKeyboardArbitrary.
+    private func sendKeyEvent(keyCode: UInt8, direction: Int32) {
+        guard let fn = bridge.messageForKeyboardArbitrary else { return }
+        let msg = fn(Int32(keyCode), direction)
+        let size = malloc_size(msg)
+        let data = Data(bytes: msg, count: size)
+        free(msg)
+        bridge.sendMessage(data, to: client)
+    }
+
+    /// Maps an ASCII character to its USB HID keycode and whether Shift is needed.
+    private static func hidKeyCode(for char: Character) -> (keyCode: UInt8, needsShift: Bool)? {
+        switch char {
+        // Letters
+        case "a"..."z":
+            return (UInt8(char.asciiValue! - Character("a").asciiValue! + 0x04), false)
+        case "A"..."Z":
+            return (UInt8(char.asciiValue! - Character("A").asciiValue! + 0x04), true)
+        // Numbers
+        case "1"..."9":
+            return (UInt8(char.asciiValue! - Character("1").asciiValue! + 0x1E), false)
+        case "0":
+            return (0x27, false)
+        // Shifted number row symbols
+        case "!": return (0x1E, true)
+        case "@": return (0x1F, true)
+        case "#": return (0x20, true)
+        case "$": return (0x21, true)
+        case "%": return (0x22, true)
+        case "^": return (0x23, true)
+        case "&": return (0x24, true)
+        case "*": return (0x25, true)
+        case "(": return (0x26, true)
+        case ")": return (0x27, true)
+        // Special keys
+        case "\n": return (0x28, false)  // Enter/Return
+        case "\t": return (0x2B, false)  // Tab
+        case " ":  return (0x2C, false)  // Space
+        // Punctuation (unshifted / shifted pairs)
+        case "-": return (0x2D, false)
+        case "_": return (0x2D, true)
+        case "=": return (0x2E, false)
+        case "+": return (0x2E, true)
+        case "[": return (0x2F, false)
+        case "{": return (0x2F, true)
+        case "]": return (0x30, false)
+        case "}": return (0x30, true)
+        case "\\": return (0x31, false)
+        case "|":  return (0x31, true)
+        case ";": return (0x33, false)
+        case ":": return (0x33, true)
+        case "'": return (0x34, false)
+        case "\"": return (0x34, true)
+        case "`": return (0x35, false)
+        case "~": return (0x35, true)
+        case ",": return (0x36, false)
+        case "<": return (0x36, true)
+        case ".": return (0x37, false)
+        case ">": return (0x37, true)
+        case "/": return (0x38, false)
+        case "?": return (0x38, true)
+        default:
+            return nil
+        }
+    }
+
     // MARK: - Touch Message Construction
 
     /// Builds a 320-byte touch message with duplicated payload, matching idb's touchMessageWithPayload.

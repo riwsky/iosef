@@ -486,7 +486,8 @@ func handleUIType(_ params: CallTool.Parameters) async throws -> CallTool.Result
     }
 
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    try await TextInjector.typeText(text, deviceID: udid)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    hidClient.typeText(text)
 
     return .init(content: [.text("Typed successfully")])
 }
