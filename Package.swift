@@ -11,8 +11,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "IndigoCTypes",
+            path: "Sources/IndigoCTypes",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "SimulatorKit",
-            dependencies: [],
+            dependencies: ["IndigoCTypes"],
             path: "Sources/SimulatorKit"
         ),
         .executableTarget(

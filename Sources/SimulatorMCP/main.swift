@@ -6,8 +6,6 @@ import SimulatorKit
 // MARK: - Configuration
 
 let serverVersion = "2.0.0"
-let troubleshootingURL = "https://github.com/joshuayoes/ios-simulator-mcp/blob/main/TROUBLESHOOTING.md"
-
 let filteredTools: Set<String> = {
     guard let env = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_FILTERED_TOOLS"] else {
         return []
@@ -17,10 +15,6 @@ let filteredTools: Set<String> = {
 
 func isFiltered(_ name: String) -> Bool {
     filteredTools.contains(name)
-}
-
-func errorWithTroubleshooting(_ message: String) -> String {
-    "\(message)\n\nFor help, see the troubleshooting guide: \(troubleshootingURL)"
 }
 
 // MARK: - Value extraction helpers
@@ -60,32 +54,140 @@ func ensureAbsolutePath(_ filePath: String) -> String {
     return defaultDir + "/" + filePath
 }
 
-// MARK: - Coordinate translation helper
+// MARK: - Simulator cache
+
+/// Caches device info and coordinate translators to avoid redundant simctl spawns.
+/// Device info (UDID + name) is cached for 60s. The CoordinateTranslator is cached
+/// for 10s since the Simulator window can be moved/resized.
+actor SimulatorCache {
+    static let shared = SimulatorCache()
+
+    private struct DeviceCache {
+        let udid: String
+        let name: String?
+        let timestamp: ContinuousClock.Instant
+    }
+
+    private struct TranslatorCache {
+        let translator: CoordinateTranslator
+        let iosAppElement: AccessibilityElement
+        let timestamp: ContinuousClock.Instant
+    }
+
+    private var deviceCache: DeviceCache?
+    private var translatorCache: [String: TranslatorCache] = [:]
+    private var hidClients: [String: IndigoHIDClient] = [:]
+
+    private let deviceTTL: Duration = .seconds(60)
+    private let translatorTTL: Duration = .seconds(10)
+
+    /// Resolves device UDID, using cache when possible.
+    func resolveDeviceID(_ udid: String?) async throws -> String {
+        if let udid = udid { return udid }
+
+        let now = ContinuousClock.now
+        if let cached = deviceCache,
+           now - cached.timestamp < deviceTTL {
+            return cached.udid
+        }
+
+        let device = try await SimCtlClient.getBootedDevice()
+        deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
+        return device.udid
+    }
+
+    /// Gets device name, using cache when possible (avoids a second simctl spawn).
+    func getDeviceName(udid: String) async throws -> String? {
+        let now = ContinuousClock.now
+        if let cached = deviceCache,
+           cached.udid == udid,
+           now - cached.timestamp < deviceTTL {
+            return cached.name
+        }
+
+        // Single simctl call to get both UDID and name
+        let device = try await SimCtlClient.getBootedDevice()
+        deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
+        if device.udid == udid {
+            return device.name
+        }
+
+        // UDID doesn't match booted device — fall back to full lookup
+        return try await SimCtlClient.getDeviceName(udid: udid)
+    }
+
+    /// Gets the CoordinateTranslator, using cache when possible.
+    func getTranslator(udid: String) async throws -> CoordinateTranslator {
+        let now = ContinuousClock.now
+        if let cached = translatorCache[udid],
+           now - cached.timestamp < translatorTTL {
+            return cached.translator
+        }
+
+        let deviceName = try await getDeviceName(udid: udid)
+
+        guard SimulatorFinder.findSimulator() != nil else {
+            throw MCPToolError.simulatorNotRunning
+        }
+
+        guard let iosAppElement = SimulatorFinder.findIOSAppElement(forUDID: udid, deviceName: deviceName) else {
+            throw MCPToolError.iosAppNotFound
+        }
+
+        guard let contentFrame = iosAppElement.frame else {
+            throw MCPToolError.cannotGetFrame
+        }
+
+        let translator = CoordinateTranslator(
+            contentFrame: contentFrame,
+            deviceSize: contentFrame.size
+        )
+
+        translatorCache[udid] = TranslatorCache(
+            translator: translator,
+            iosAppElement: iosAppElement,
+            timestamp: now
+        )
+        return translator
+    }
+
+    /// Gets the cached iOS app element (from translator lookup), or finds it fresh.
+    func getIOSAppElement(udid: String) async throws -> AccessibilityElement {
+        // Try getting it from translator cache (which does the same AX lookup)
+        _ = try await getTranslator(udid: udid)
+        if let cached = translatorCache[udid] {
+            return cached.iosAppElement
+        }
+        // Should not reach here, but fall back
+        let deviceName = try await getDeviceName(udid: udid)
+        guard let element = SimulatorFinder.findIOSAppElement(forUDID: udid, deviceName: deviceName) else {
+            throw MCPToolError.iosAppNotFound
+        }
+        return element
+    }
+
+    /// Gets or creates an IndigoHIDClient for the given UDID.
+    /// Clients are cached indefinitely (they hold a SimDevice reference).
+    func getHIDClient(udid: String) throws -> IndigoHIDClient {
+        if let cached = hidClients[udid] {
+            return cached
+        }
+        let client = try IndigoHIDClient(udid: udid)
+        hidClients[udid] = client
+        return client
+    }
+
+    func invalidate() {
+        deviceCache = nil
+        translatorCache.removeAll()
+        hidClients.removeAll()
+    }
+}
+
+// MARK: - Coordinate translation helper (legacy, now delegates to cache)
 
 func makeCoordinateTranslator(udid: String) async throws -> CoordinateTranslator {
-    let deviceName = try await SimCtlClient.getDeviceName(udid: udid)
-
-    guard SimulatorFinder.findSimulator() != nil else {
-        throw MCPToolError.simulatorNotRunning
-    }
-
-    guard let iosAppElement = SimulatorFinder.findIOSAppElement(forUDID: udid, deviceName: deviceName) else {
-        throw MCPToolError.iosAppNotFound
-    }
-
-    guard let contentFrame = iosAppElement.frame else {
-        throw MCPToolError.cannotGetFrame
-    }
-
-    // Use content frame as device size. This works because:
-    // - The MCP tools pass iOS point coordinates
-    // - The AXGroup frame represents the iOS content area in macOS screen coords
-    // - At the default zoom, contentFrame.size == device logical size
-    // - At other zoom levels, the scale is inherent in the contentFrame
-    return CoordinateTranslator(
-        contentFrame: contentFrame,
-        deviceSize: contentFrame.size
-    )
+    try await SimulatorCache.shared.getTranslator(udid: udid)
 }
 
 enum MCPToolError: Error, LocalizedError {
@@ -395,10 +497,10 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
         case "launch_app":
             return try await handleLaunchApp(params)
         default:
-            return .init(content: [.text(errorWithTroubleshooting("Unknown tool: \(params.name)"))], isError: true)
+            return .init(content: [.text("Unknown tool: \(params.name)")], isError: true)
         }
     } catch {
-        return .init(content: [.text(errorWithTroubleshooting("Error: \(error.localizedDescription)"))], isError: true)
+        return .init(content: [.text("Error: \(error.localizedDescription)")], isError: true)
     }
 }
 
@@ -419,16 +521,8 @@ func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool
         throw MCPToolError.accessibilityPermissionDenied
     }
 
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let deviceName = try await SimCtlClient.getDeviceName(udid: udid)
-
-    guard SimulatorFinder.findSimulator() != nil else {
-        throw MCPToolError.simulatorNotRunning
-    }
-
-    guard let iosAppElement = SimulatorFinder.findIOSAppElement(forUDID: udid, deviceName: deviceName) else {
-        throw MCPToolError.iosAppNotFound
-    }
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let iosAppElement = try await SimulatorCache.shared.getIOSAppElement(udid: udid)
 
     let treeNode = TreeSerializer.serialize(iosAppElement)
     let json = try TreeSerializer.toJSON([treeNode])
@@ -440,7 +534,7 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
         throw MCPToolError.accessibilityPermissionDenied
     }
 
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
     guard let x = extractDouble(params.arguments?["x"]),
           let y = extractDouble(params.arguments?["y"]) else {
@@ -450,12 +544,10 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
     let translator = try await makeCoordinateTranslator(udid: udid)
     let screenPoint = translator.toScreenCoordinate(iosX: CGFloat(x), iosY: CGFloat(y))
 
-    guard let simulator = SimulatorFinder.findSimulator() else {
-        throw MCPToolError.simulatorNotRunning
-    }
-
-    let appElement = AccessibilityElement(element: AXUIElementCreateApplication(simulator.processIdentifier))
-    guard let hitElement = appElement.hitTest(x: screenPoint.x, y: screenPoint.y) else {
+    // Use the cached iosAppElement (scoped to the correct simulator window)
+    // instead of the app-level element, to avoid hitting the wrong sim in multi-sim setups
+    let iosAppElement = try await SimulatorCache.shared.getIOSAppElement(udid: udid)
+    guard let hitElement = iosAppElement.hitTest(x: screenPoint.x, y: screenPoint.y) else {
         return .init(content: [.text("No element found at coordinates (\(x), \(y))")])
     }
 
@@ -470,15 +562,14 @@ func handleUITap(_ params: CallTool.Parameters) async throws -> CallTool.Result 
         return .init(content: [.text("Missing required parameters: x, y")], isError: true)
     }
 
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let translator = try await makeCoordinateTranslator(udid: udid)
-    let screenPoint = translator.toScreenCoordinate(iosX: CGFloat(x), iosY: CGFloat(y))
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
 
     if let durationStr = params.arguments?["duration"]?.stringValue,
        let duration = Double(durationStr) {
-        TouchInjector.longPress(screenX: screenPoint.x, screenY: screenPoint.y, durationSeconds: duration)
+        hidClient.longPress(x: x, y: y, duration: duration)
     } else {
-        TouchInjector.tap(screenX: screenPoint.x, screenY: screenPoint.y)
+        hidClient.tap(x: x, y: y)
     }
 
     return .init(content: [.text("Tapped successfully")])
@@ -489,7 +580,7 @@ func handleUIType(_ params: CallTool.Parameters) async throws -> CallTool.Result
         return .init(content: [.text("Missing required parameter: text")], isError: true)
     }
 
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     try await TextInjector.typeText(text, deviceID: udid)
 
     return .init(content: [.text("Typed successfully")])
@@ -503,11 +594,8 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
         return .init(content: [.text("Missing required parameters: x_start, y_start, x_end, y_end")], isError: true)
     }
 
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let translator = try await makeCoordinateTranslator(udid: udid)
-
-    let startPoint = translator.toScreenCoordinate(iosX: CGFloat(xStart), iosY: CGFloat(yStart))
-    let endPoint = translator.toScreenCoordinate(iosX: CGFloat(xEnd), iosY: CGFloat(yEnd))
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
 
     let delta = extractDouble(params.arguments?["delta"]) ?? 1.0
     let steps = max(1, Int(20.0 / delta))
@@ -519,9 +607,9 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
         durationSeconds = nil
     }
 
-    SwipeInjector.swipe(
-        startX: startPoint.x, startY: startPoint.y,
-        endX: endPoint.x, endY: endPoint.y,
+    hidClient.swipe(
+        startX: xStart, startY: yStart,
+        endX: xEnd, endY: yEnd,
         steps: steps,
         durationSeconds: durationSeconds
     )
@@ -530,8 +618,8 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
 }
 
 func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let deviceName = try await SimCtlClient.getDeviceName(udid: udid)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let deviceName = try await SimulatorCache.shared.getDeviceName(udid: udid)
 
     guard let windowID = SimulatorWindowResolver.findWindowID(deviceName: deviceName) else {
         throw ScreenCapture.CaptureError.simulatorWindowNotFound

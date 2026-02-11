@@ -33,64 +33,44 @@ public enum TextInjector {
             throw TextInjectorError.pbcopyFailed(exitCode: pbcopy.terminationStatus)
         }
 
-        // Delay to ensure pasteboard is ready
-        try await Task.sleep(for: .milliseconds(50))
-
-        // Send Cmd+V to paste via AppleScript (most reliable for modifier keys)
-        try sendPasteViaAppleScript()
+        // Send Cmd+V to paste via native NSAppleScript (no process spawn)
+        try sendPasteViaNSAppleScript()
     }
 
-    /// Sends Cmd+V to the Simulator via AppleScript System Events.
-    ///
-    /// This is more reliable than CGEvent for sending keyboard shortcuts with modifiers,
-    /// since AppleScript targets the specific application and handles modifier state correctly.
-    private static func sendPasteViaAppleScript() throws {
-        let script = Process()
-        script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        script.arguments = [
-            "-e", "tell application \"Simulator\" to activate",
-            "-e", "delay 0.1",
-            "-e", "tell application \"System Events\" to keystroke \"v\" using command down",
-        ]
-        script.standardOutput = FileHandle.nullDevice
-        script.standardError = FileHandle.nullDevice
+    /// Sends Cmd+V to the Simulator via native NSAppleScript (in-process, no osascript spawn).
+    private static func sendPasteViaNSAppleScript() throws {
+        let scriptSource = """
+        tell application "Simulator" to activate
+        delay 0.05
+        tell application "System Events" to keystroke "v" using command down
+        """
+        let script = NSAppleScript(source: scriptSource)
+        var errorInfo: NSDictionary?
+        script?.executeAndReturnError(&errorInfo)
 
-        try script.run()
-        script.waitUntilExit()
-
-        guard script.terminationStatus == 0 else {
-            // Fall back to CGEvent if AppleScript fails (e.g., no System Events access)
+        if let error = errorInfo {
+            // Fall back to CGEvent if AppleScript fails
+            let msg = error[NSAppleScript.errorMessage] as? String ?? "unknown"
+            FileHandle.standardError.write(Data("[TextInjector] NSAppleScript failed: \(msg), falling back to CGEvent\n".utf8))
             sendPasteViaCGEvent()
-            return
         }
     }
 
     /// Fallback: Sends Cmd+V via CGEvent if AppleScript is unavailable.
     private static func sendPasteViaCGEvent() {
         let source = CGEventSource(stateID: .hidSystemState)
-        let commandKeyCode: CGKeyCode = 55
         let vKeyCode: CGKeyCode = 9
-
-        guard let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: commandKeyCode, keyDown: true)
-        else { return }
-        cmdDown.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.02)
 
         guard let vDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true)
         else { return }
         vDown.flags = .maskCommand
         vDown.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.02)
+        usleep(10000)
 
         guard let vUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
         else { return }
         vUp.flags = .maskCommand
         vUp.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.02)
-
-        guard let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: commandKeyCode, keyDown: false)
-        else { return }
-        cmdUp.post(tap: .cghidEventTap)
     }
 
     public enum TextInjectorError: Error, LocalizedError {
