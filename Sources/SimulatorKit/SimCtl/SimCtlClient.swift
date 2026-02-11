@@ -15,6 +15,9 @@ public enum SimCtlClient {
     /// Times out after `timeout` (defaults to `defaultTimeout`), killing the process if exceeded.
     public static func run(_ command: String, arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
         let timeout = timeout ?? defaultTimeout
+        let shortArgs = arguments.prefix(4).joined(separator: " ")
+        fputs("[SimCtl] run: \(command) \(shortArgs)...\n", stderr)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
         process.arguments = arguments
@@ -27,6 +30,7 @@ public enum SimCtlClient {
         let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
 
         try process.run()
+        fputs("[SimCtl] process launched (pid \(process.processIdentifier)), reading output...\n", stderr)
 
         // Schedule timeout: capture only PID (Int32, Sendable) and a thread-safe flag
         let pid = process.processIdentifier
@@ -43,6 +47,7 @@ public enum SimCtlClient {
 
         process.waitUntilExit()
         timeoutItem.cancel()
+        fputs("[SimCtl] exited with status \(process.terminationStatus), stdout=\(stdoutData.count)B stderr=\(stderrData.count)B\n", stderr)
 
         if timedOut.value {
             let desc = ([command] + arguments).joined(separator: " ")

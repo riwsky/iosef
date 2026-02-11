@@ -524,9 +524,12 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
 }
 
 func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    fputs("[ui_view] Resolving UDID...\n", stderr)
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    fputs("[ui_view] UDID resolved: \(udid), capturing screenshot...\n", stderr)
 
     let capture = try ScreenCapture.captureSimulator(udid: udid)
+    fputs("[ui_view] Screenshot captured (\(capture.width)x\(capture.height)), returning response...\n", stderr)
 
     return .init(content: [
         .image(data: capture.base64, mimeType: "image/jpeg", metadata: nil),
