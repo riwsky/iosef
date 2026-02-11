@@ -82,6 +82,10 @@ actor SimulatorCache {
     private let translatorTTL: Duration = .seconds(10)
 
     /// Resolves device UDID, using cache when possible.
+    /// Delegates to SimCtlClient.resolveDeviceID which checks:
+    /// 1. Explicit udid parameter
+    /// 2. Default device by name (from VCS root)
+    /// 3. First booted simulator
     func resolveDeviceID(_ udid: String?) async throws -> String {
         if let udid = udid { return udid }
 
@@ -91,9 +95,10 @@ actor SimulatorCache {
             return cached.udid
         }
 
-        let device = try await SimCtlClient.getBootedDevice()
-        deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
-        return device.udid
+        let resolvedUdid = try await SimCtlClient.resolveDeviceID(nil)
+        let name = try await SimCtlClient.getDeviceName(udid: resolvedUdid)
+        deviceCache = DeviceCache(udid: resolvedUdid, name: name, timestamp: now)
+        return resolvedUdid
     }
 
     /// Gets device name, using cache when possible (avoids a second simctl spawn).
@@ -760,6 +765,46 @@ func handleLaunchApp(_ params: CallTool.Parameters) async throws -> CallTool.Res
 
     return .init(content: [.text("App \(bundleID) launched successfully")])
 }
+
+// MARK: - Default device name from VCS root
+
+/// Run a command and return trimmed stdout, or nil on failure.
+func runForOutput(_ executable: String, _ arguments: String...) -> String? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = Array(arguments)
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty else { return nil }
+        return output
+    } catch {
+        return nil
+    }
+}
+
+func computeDefaultDeviceName() -> String? {
+    // Explicit env var takes priority
+    if let name = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_DEFAULT_DEVICE_NAME"] {
+        return name.isEmpty ? nil : name
+    }
+
+    // Try jj root first (Jujutsu), then git
+    let root = runForOutput("/usr/bin/env", "jj", "root")
+             ?? runForOutput("/usr/bin/git", "rev-parse", "--show-toplevel")
+
+    guard let root else { return nil }
+    return URL(fileURLWithPath: root).lastPathComponent
+}
+
+SimCtlClient.defaultDeviceName = computeDefaultDeviceName()
 
 // MARK: - Server setup
 

@@ -52,6 +52,27 @@ public enum SimCtlClient {
         try await run("/usr/bin/xcrun", arguments: ["simctl"] + arguments)
     }
 
+    /// Default device name derived from VCS root at startup.
+    /// Set once before the server starts handling requests.
+    nonisolated(unsafe) public static var defaultDeviceName: String?
+
+    /// Finds an available simulator matching the given name, checking `name` then `name-main`.
+    public static func findDeviceByName(_ name: String) async throws -> DeviceInfo? {
+        let result = try await simctl("list", "devices", "-j")
+        guard let data = result.stdout.data(using: .utf8) else { return nil }
+        let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
+
+        let candidates = [name, "\(name)-main"]
+        for candidate in candidates {
+            for (_, devices) in deviceList.devices {
+                for device in devices where device.name == candidate && (device.isAvailable ?? false) {
+                    return device
+                }
+            }
+        }
+        return nil
+    }
+
     /// Gets the booted device info.
     public static func getBootedDevice() async throws -> DeviceInfo {
         let result = try await simctl("list", "devices", "-j")
@@ -75,6 +96,13 @@ public enum SimCtlClient {
         if let udid = udid {
             return udid
         }
+
+        // Try default device by name (set from VCS root at startup)
+        if let name = defaultDeviceName,
+           let device = try await findDeviceByName(name) {
+            return device.udid
+        }
+
         let device = try await getBootedDevice()
         return device.udid
     }
