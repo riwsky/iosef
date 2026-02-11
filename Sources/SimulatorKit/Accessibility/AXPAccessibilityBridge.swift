@@ -44,10 +44,18 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     // MARK: - Public API
 
     /// Returns the full accessibility tree from the frontmost application as an array of TreeNodes.
-    public func accessibilityElements() throws -> [TreeNode] {
+    /// The entire operation (including recursive tree walk) is bounded by `timeout`.
+    public func accessibilityElements(timeout: Duration = .seconds(10)) throws -> [TreeNode] {
+        let start = ContinuousClock.now
+        let deadline = start.advanced(by: timeout)
+        let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+        let dispatcher = delegate as! AXPTranslationDispatcher
+
         let token = UUID().uuidString
-        (delegate as! AXPTranslationDispatcher).registerDevice(forToken: token)
-        defer { (delegate as! AXPTranslationDispatcher).unregisterToken(token) }
+        dispatcher.registerDevice(forToken: token)
+        defer { dispatcher.unregisterToken(token) }
+
+        try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
 
         guard let translation = performTranslation(
             selector: "frontmostApplicationWithDisplayId:bridgeDelegateToken:",
@@ -60,6 +68,8 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         // Set the token on the translation object
         (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
 
+        try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
+
         guard let element = macPlatformElement(from: translation) else {
             throw AXPBridgeError.noMacPlatformElement
         }
@@ -68,14 +78,25 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
         }
 
-        return [serializeElement(element, token: token)]
+        var elementCount = 0
+        let result = [try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)]
+        let elapsed = ContinuousClock.now - start
+        let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
+        FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+        return result
     }
 
     /// Returns the accessibility element at the given iOS coordinates.
-    public func accessibilityElementAtPoint(x: Double, y: Double) throws -> TreeNode {
+    /// The entire operation is bounded by `timeout`.
+    public func accessibilityElementAtPoint(x: Double, y: Double, timeout: Duration = .seconds(10)) throws -> TreeNode {
+        let start = ContinuousClock.now
+        let deadline = start.advanced(by: timeout)
+        let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+        let dispatcher = delegate as! AXPTranslationDispatcher
+
         let token = UUID().uuidString
-        (delegate as! AXPTranslationDispatcher).registerDevice(forToken: token)
-        defer { (delegate as! AXPTranslationDispatcher).unregisterToken(token) }
+        dispatcher.registerDevice(forToken: token)
+        defer { dispatcher.unregisterToken(token) }
 
         let point = CGPoint(x: x, y: y)
 
@@ -85,6 +106,8 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
 
+        try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
+
         guard let element = macPlatformElement(from: translation) else {
             throw AXPBridgeError.noMacPlatformElement
         }
@@ -93,7 +116,18 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
         }
 
-        return serializeElement(element, token: token)
+        var elementCount = 0
+        let result = try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
+        let elapsed = ContinuousClock.now - start
+        let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
+        FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+        return result
+    }
+
+    private func checkDeadline(_ deadline: ContinuousClock.Instant, timeoutSeconds: Double) throws {
+        if ContinuousClock.now >= deadline {
+            throw TimeoutError.accessibilityTimedOut(timeoutSeconds: timeoutSeconds)
+        }
     }
 
     // MARK: - Private helpers
@@ -138,7 +172,9 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     }
 
     /// Recursively serializes an AXPMacPlatformElement into a TreeNode.
-    private func serializeElement(_ element: AnyObject, token: String) -> TreeNode {
+    /// Checks `deadline` before each child traversal to bound total operation time.
+    private func serializeElement(_ element: AnyObject, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int) throws -> TreeNode {
+        elementCount += 1
         // Extract properties via KVC / selectors
         let role = stringProperty(element, "accessibilityRole")
         let label = stringProperty(element, "accessibilityLabel")
@@ -183,11 +219,12 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         if element.responds(to: childrenSel),
            let children = element.perform(childrenSel)?.takeUnretainedValue() as? [AnyObject] {
             for child in children {
+                try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
                 // Set bridgeDelegateToken on each child's translation
                 if let translation = (child as AnyObject).value(forKey: "translation") as AnyObject? {
                     translation.setValue(token, forKey: "bridgeDelegateToken")
                 }
-                childNodes.append(serializeElement(child, token: token))
+                childNodes.append(try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount))
             }
         }
 
@@ -295,30 +332,36 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
 
         let callback: @convention(block) (AnyObject) -> AnyObject = { [weak self] (request: AnyObject) -> AnyObject in
             guard let self = self, let dev = device else {
-                // Return empty response
-                if let cls: AnyClass = objc_lookUpClass("AXPTranslatorResponse") {
-                    let sel = NSSelectorFromString("emptyResponse")
-                    if let resp = (cls as AnyObject).perform(sel)?.takeUnretainedValue() {
-                        return resp
-                    }
-                }
-                return NSNull()
+                FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC callback: no device for token, returning empty\n".utf8))
+                return Self.emptyAXPResponse()
             }
 
+            let start = CFAbsoluteTimeGetCurrent()
             do {
-                return try self.bridge.sendAccessibilityRequest(request, toDevice: dev)
-            } catch {
-                if let cls: AnyClass = objc_lookUpClass("AXPTranslatorResponse") {
-                    let sel = NSSelectorFromString("emptyResponse")
-                    if let resp = (cls as AnyObject).perform(sel)?.takeUnretainedValue() {
-                        return resp
-                    }
+                let response = try self.bridge.sendAccessibilityRequest(request, toDevice: dev)
+                let elapsed = CFAbsoluteTimeGetCurrent() - start
+                if elapsed > 1.0 {
+                    FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC call slow: \(Int(elapsed * 1000))ms\n".utf8))
                 }
-                return NSNull()
+                return response
+            } catch {
+                let elapsed = CFAbsoluteTimeGetCurrent() - start
+                FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC call failed after \(Int(elapsed * 1000))ms: \(error.localizedDescription)\n".utf8))
+                return Self.emptyAXPResponse()
             }
         }
 
         return callback
+    }
+
+    private static func emptyAXPResponse() -> AnyObject {
+        if let cls: AnyClass = objc_lookUpClass("AXPTranslatorResponse") {
+            let sel = NSSelectorFromString("emptyResponse")
+            if let resp = (cls as AnyObject).perform(sel)?.takeUnretainedValue() {
+                return resp
+            }
+        }
+        return NSNull()
     }
 
     /// Identity transform — frames from AXPMacPlatformElement are already in iOS simulator coordinates.
