@@ -190,7 +190,7 @@ func allTools() -> [Tool] {
                 "type": .string("object"),
                 "properties": .object([
                     "x": .object(["type": .string("number"), "description": .string("The x-coordinate")]),
-                    "y": .object(["type": .string("number"), "description": .string("The x-coordinate")]),
+                    "y": .object(["type": .string("number"), "description": .string("The y-coordinate")]),
                     "duration": .object([
                         "type": .string("string"),
                         "description": .string("Press duration"),

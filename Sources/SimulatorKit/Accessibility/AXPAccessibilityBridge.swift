@@ -153,10 +153,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         if element.responds(to: frameSel) {
             let frame = callFrameMethod(element, selector: frameSel)
             frameInfo = TreeNode.FrameInfo(
-                x: Double(frame.origin.x),
-                y: Double(frame.origin.y),
-                width: Double(frame.size.width),
-                height: Double(frame.size.height)
+                x: (Double(frame.origin.x) * 100).rounded() / 100,
+                y: (Double(frame.origin.y) * 100).rounded() / 100,
+                width: (Double(frame.size.width) * 100).rounded() / 100,
+                height: (Double(frame.size.height) * 100).rounded() / 100
             )
         } else {
             frameInfo = nil
