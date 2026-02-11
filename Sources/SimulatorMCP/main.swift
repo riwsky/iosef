@@ -664,26 +664,47 @@ func handleLaunchApp(_ params: CallTool.Parameters) async throws -> CallTool.Res
 
 // MARK: - Default device name from VCS root
 
-/// Run a command and return trimmed stdout, or nil on failure.
-func runForOutput(_ executable: String, _ arguments: String...) -> String? {
+/// Run a command and return trimmed stdout, or nil on failure. Times out after `timeout` (default 5s).
+func runForOutput(_ executable: String, _ arguments: String..., timeout: Duration = .seconds(5)) -> String? {
+    runForOutputImpl(executable, arguments: Array(arguments), timeout: timeout)
+}
+
+private func runForOutputImpl(_ executable: String, arguments: [String], timeout: Duration) -> String? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = Array(arguments)
+    process.arguments = arguments
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = FileHandle.nullDevice
+
+    let semaphore = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in
+        semaphore.signal()
+    }
+
     do {
         try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !output.isEmpty else { return nil }
-        return output
     } catch {
         return nil
     }
+
+    let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+    let waitResult = semaphore.wait(timeout: .now() + timeoutSeconds)
+
+    if waitResult == .timedOut {
+        process.terminate()
+        DispatchQueue.global(qos: .utility).async {
+            process.waitUntilExit()
+        }
+        return nil
+    }
+
+    guard process.terminationStatus == 0 else { return nil }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    guard let output = String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+          !output.isEmpty else { return nil }
+    return output
 }
 
 func computeDefaultDeviceName() -> String? {
@@ -701,6 +722,12 @@ func computeDefaultDeviceName() -> String? {
 }
 
 SimCtlClient.defaultDeviceName = computeDefaultDeviceName()
+
+// Configure global process timeout from environment
+if let timeoutStr = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_TIMEOUT"],
+   let timeoutSecs = Double(timeoutStr), timeoutSecs > 0 {
+    SimCtlClient.defaultTimeout = .seconds(Int64(timeoutSecs))
+}
 
 // MARK: - Server setup
 

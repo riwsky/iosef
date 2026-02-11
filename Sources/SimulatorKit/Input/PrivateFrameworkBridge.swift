@@ -252,8 +252,8 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     }
 
     /// Calls -[SimDevice sendAccessibilityRequestAsync:completionQueue:completionHandler:] via IMP.
-    /// Blocks the calling thread until the async response arrives.
-    public func sendAccessibilityRequest(_ request: AnyObject, toDevice device: AnyObject) throws -> AnyObject {
+    /// Blocks the calling thread until the async response arrives, or times out.
+    public func sendAccessibilityRequest(_ request: AnyObject, toDevice device: AnyObject, timeoutSeconds: Double = 10.0) throws -> AnyObject {
         let sel = NSSelectorFromString("sendAccessibilityRequestAsync:completionQueue:completionHandler:")
         guard let method = class_getInstanceMethod(type(of: device as AnyObject), sel) else {
             throw PrivateFrameworkError.classNotFound("SimDevice.sendAccessibilityRequestAsync:completionQueue:completionHandler:")
@@ -276,7 +276,11 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         let completionObj: Any = completionBlock
 
         send(device, sel, request, queue, completionObj)
-        group.wait()
+
+        let waitResult = group.wait(timeout: .now() + timeoutSeconds)
+        if waitResult == .timedOut {
+            throw TimeoutError.accessibilityTimedOut(timeoutSeconds: timeoutSeconds)
+        }
 
         if let response = result {
             return response

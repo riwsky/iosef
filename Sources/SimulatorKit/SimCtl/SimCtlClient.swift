@@ -3,13 +3,18 @@ import Foundation
 /// Async wrapper for running shell commands (primarily xcrun simctl).
 public enum SimCtlClient {
 
+    /// Default timeout for process execution. Can be overridden via `IOS_SIMULATOR_MCP_TIMEOUT` env var.
+    nonisolated(unsafe) public static var defaultTimeout: Duration = .seconds(30)
+
     public struct CommandResult: Sendable {
         public let stdout: String
         public let stderr: String
     }
 
     /// Runs a command with arguments and returns stdout/stderr.
-    public static func run(_ command: String, arguments: [String]) async throws -> CommandResult {
+    /// Times out after `timeout` (defaults to `defaultTimeout`), killing the process if exceeded.
+    public static func run(_ command: String, arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
+        let timeout = timeout ?? defaultTimeout
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
         process.arguments = arguments
@@ -19,13 +24,30 @@ public enum SimCtlClient {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+
         try process.run()
 
-        // Read output asynchronously
+        // Schedule timeout: capture only PID (Int32, Sendable) and a thread-safe flag
+        let pid = process.processIdentifier
+        let timedOut = TimeoutFlag()
+        let timeoutItem = DispatchWorkItem {
+            timedOut.set()
+            kill(pid, SIGTERM)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutItem)
+
+        // Read output (blocks until write end closes when process exits)
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
 
         process.waitUntilExit()
+        timeoutItem.cancel()
+
+        if timedOut.value {
+            let desc = ([command] + arguments).joined(separator: " ")
+            throw TimeoutError.processTimedOut(command: desc, timeoutSeconds: timeoutSeconds)
+        }
 
         let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -42,14 +64,32 @@ public enum SimCtlClient {
         return CommandResult(stdout: stdout, stderr: stderr)
     }
 
+    /// Thread-safe boolean flag for timeout detection.
+    private final class TimeoutFlag: @unchecked Sendable {
+        private var _value = false
+        private let lock = NSLock()
+
+        var value: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return _value
+        }
+
+        func set() {
+            lock.lock()
+            defer { lock.unlock() }
+            _value = true
+        }
+    }
+
     /// Runs xcrun simctl with the given arguments.
     public static func simctl(_ arguments: String...) async throws -> CommandResult {
         try await run("/usr/bin/xcrun", arguments: ["simctl"] + arguments)
     }
 
     /// Runs xcrun simctl with an array of arguments.
-    public static func simctl(_ arguments: [String]) async throws -> CommandResult {
-        try await run("/usr/bin/xcrun", arguments: ["simctl"] + arguments)
+    public static func simctl(_ arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
+        try await run("/usr/bin/xcrun", arguments: ["simctl"] + arguments, timeout: timeout)
     }
 
     /// Default device name derived from VCS root at startup.

@@ -6,7 +6,8 @@ import ImageIO
 public enum ScreenCapture {
 
     /// Captures the simulator screen as a JPEG via simctl and returns base64-encoded data.
-    public static func captureSimulator(udid: String) throws -> (base64: String, width: Int, height: Int) {
+    /// Times out after `timeout` (default 15s), killing the process if exceeded.
+    public static func captureSimulator(udid: String, timeout: Duration = .seconds(15)) throws -> (base64: String, width: Int, height: Int) {
         let tempPath = "/tmp/ios-sim-mcp-\(UUID().uuidString).png"
         defer { try? FileManager.default.removeItem(atPath: tempPath) }
 
@@ -15,8 +16,24 @@ public enum ScreenCapture {
         process.arguments = ["simctl", "io", udid, "screenshot", "--type=png", "--", tempPath]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            semaphore.signal()
+        }
+
         try process.run()
-        process.waitUntilExit()
+
+        let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+        let waitResult = semaphore.wait(timeout: .now() + timeoutSeconds)
+
+        if waitResult == .timedOut {
+            process.terminate()
+            DispatchQueue.global(qos: .utility).async {
+                process.waitUntilExit()
+            }
+            throw TimeoutError.processTimedOut(command: "xcrun simctl io screenshot", timeoutSeconds: timeoutSeconds)
+        }
 
         guard process.terminationStatus == 0 else {
             throw CaptureError.simctlFailed(exitCode: process.terminationStatus)
