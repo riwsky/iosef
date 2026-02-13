@@ -476,11 +476,11 @@ func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
 
-    let json = try await withTimeout("describe_all", .seconds(12)) {
+    let markdown = try await withTimeout("describe_all", .seconds(12)) {
         let nodes = try axpBridge.accessibilityElements()
-        return try TreeSerializer.toJSON(nodes)
+        return TreeSerializer.toMarkdown(nodes)
     }
-    return .init(content: [.text(json)])
+    return .init(content: [.text(markdown)])
 }
 
 func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -493,11 +493,11 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
 
     let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
 
-    let json = try await withTimeout("describe_point", .seconds(12)) {
+    let markdown = try await withTimeout("describe_point", .seconds(12)) {
         let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
-        return try TreeSerializer.toJSON(node)
+        return TreeSerializer.toMarkdown(node)
     }
-    return .init(content: [.text(json)])
+    return .init(content: [.text(markdown)])
 }
 
 func handleUITap(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -889,18 +889,21 @@ struct OpenSimulator: AsyncParsableCommand {
 struct UIDescribeAll: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ui_describe_all",
-        abstract: "Dump the full accessibility tree as JSON.",
+        abstract: "Dump the full accessibility tree.",
         discussion: """
-            Returns a JSON tree of every accessibility element on screen, including \
-            labels, roles, frames, and values. Use this to discover element positions \
-            for ui_tap, or to understand the current UI state.
+            Returns an indented text tree of every accessibility element on screen, \
+            including roles, labels, frames, and values. Use this to discover element \
+            positions for ui_tap, or to understand the current UI state.
 
-            Coordinates in the output are in iOS points — the same coordinate system \
-            used by ui_tap, ui_swipe, and ui_describe_point.
+            Coordinates are center-points in iOS points — pass them directly to ui_tap.
+
+            Use --json for machine-readable output. Combine with jq to filter:
 
             Examples:
               ios_simulator_cli ui_describe_all
-              ios_simulator_cli ui_describe_all --udid XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+              ios_simulator_cli ui_describe_all --json
+              ios_simulator_cli ui_describe_all --json | jq '.. | objects | select(.role == "button")'
+              ios_simulator_cli ui_describe_all --json | jq '.. | objects | select(.label? // "" | test("Sign"))'
             """
     )
 
@@ -925,7 +928,8 @@ struct UIDescribePoint: AsyncParsableCommand {
 
             Examples:
               ios_simulator_cli ui_describe_point --x 200 --y 400
-              ios_simulator_cli ui_describe_point --x 100 --y 300 --json
+              ios_simulator_cli ui_describe_point --x 200 --y 400 --json
+              ios_simulator_cli ui_describe_point --x 200 --y 400 --json | jq '.content[0].text'
             """
     )
 

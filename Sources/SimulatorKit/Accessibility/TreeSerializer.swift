@@ -95,6 +95,83 @@ public enum TreeSerializer {
         return json
     }
 
+    // MARK: - Markdown (indented text tree for LLM agents)
+
+    /// Notable traits worth surfacing in markdown output.
+    /// Traits that are redundant with the role (e.g. "staticText", "button") are excluded.
+    private static let notableTraits: Set<String> = [
+        "notEnabled", "selected", "link", "searchField",
+        "adjustable", "header", "toggle",
+    ]
+
+    /// Serializes a tree node array to an indented plain-text tree optimized for LLM agents.
+    public static func toMarkdown(_ nodes: [TreeNode]) -> String {
+        var lines: [String] = []
+        for node in nodes {
+            appendMarkdown(node: node, indent: 0, lines: &lines)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Serializes a single tree node to an indented plain-text tree.
+    public static func toMarkdown(_ node: TreeNode) -> String {
+        var lines: [String] = []
+        appendMarkdown(node: node, indent: 0, lines: &lines)
+        return lines.joined(separator: "\n")
+    }
+
+    private static func appendMarkdown(node: TreeNode, indent: Int, lines: inout [String]) {
+        let role = node.role ?? ""
+        let name = node.label.flatMap({ $0.isEmpty ? nil : $0 })
+            ?? node.title.flatMap({ $0.isEmpty ? nil : $0 })
+            ?? ""
+        let value = node.value.flatMap({ $0.isEmpty ? nil : $0 })
+        let traits = node.traits?.filter { notableTraits.contains($0) } ?? []
+
+        let hasContent = !role.isEmpty || !name.isEmpty || value != nil
+        if !hasContent && node.children.isEmpty {
+            return // skip empty containers
+        }
+
+        if hasContent {
+            let prefix = String(repeating: "  ", count: indent)
+            var parts: [String] = []
+
+            // role "name"
+            if !role.isEmpty && !name.isEmpty {
+                parts.append("\(role) \"\(name)\"")
+            } else if !role.isEmpty {
+                parts.append(role)
+            } else if !name.isEmpty {
+                parts.append("\"\(name)\"")
+            }
+
+            // @ (x, y) — center point of the frame
+            if let f = node.frame {
+                let cx = Int(round(f.x + f.width / 2))
+                let cy = Int(round(f.y + f.height / 2))
+                parts.append("@ (\(cx), \(cy))")
+            }
+
+            // value="..."
+            if let v = value {
+                parts.append("value=\"\(v)\"")
+            }
+
+            // [trait, trait]
+            if !traits.isEmpty {
+                parts.append("[\(traits.joined(separator: ", "))]")
+            }
+
+            lines.append(prefix + parts.joined(separator: " "))
+        }
+
+        let childIndent = hasContent ? indent + 1 : indent
+        for child in node.children {
+            appendMarkdown(node: child, indent: childIndent, lines: &lines)
+        }
+    }
+
     public enum SerializerError: Error, LocalizedError {
         case encodingFailed
 

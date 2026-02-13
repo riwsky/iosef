@@ -112,7 +112,7 @@ public enum ScreenCapture {
         guard let jpegData = ciContext.jpegRepresentation(
             of: scaled,
             colorSpace: colorSpace,
-            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.6]
+            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.8]
         ) else {
             throw CaptureError.jpegEncodingFailed
         }
