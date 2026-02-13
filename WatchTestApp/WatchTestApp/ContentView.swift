@@ -42,9 +42,22 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 2) {
-            Text(state.currentButton.map { "Last: R\($0.split(separator: "_")[0])C\($0.split(separator: "_")[1])" } ?? "Tap a cell")
-                .font(.system(size: 10, design: .monospaced))
-                .accessibilityIdentifier("status_label")
+            if let row = state.lastTapRow, let col = state.lastTapCol {
+                Text("Last: R\(row)C\(col)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .accessibilityIdentifier("last_tap_label")
+                    .accessibilityLabel("Last tapped Row \(row) Column \(col)")
+            } else {
+                Text("Tap a cell")
+                    .font(.system(size: 10, design: .monospaced))
+                    .accessibilityIdentifier("last_tap_label")
+                    .accessibilityLabel("No taps yet")
+            }
+
+            Text("Taps: \(state.tapCount)")
+                .font(.system(size: 9, design: .monospaced))
+                .accessibilityIdentifier("tap_count_label")
+                .accessibilityLabel("Tap count \(state.tapCount)")
 
             Grid(horizontalSpacing: 2, verticalSpacing: 2) {
                 ForEach(0..<rows, id: \.self) { row in
@@ -68,7 +81,6 @@ struct ContentView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("button_grid")
         }
-        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("root_view")
     }
 }
