@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ObjectiveC
+import IOSurface
 import IndigoCTypes
 
 /// Errors from loading Apple private frameworks.
@@ -358,6 +359,105 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         }
 
         return resultPID
+    }
+
+    // MARK: - Framebuffer Capture via IOSurface
+
+    /// Captures the device framebuffer as a CGImage via IOSurface.
+    /// Uses idb's approach: protocol conformance checks (works through ROCK proxies),
+    /// displayClass == 0 for main display, dual selector (framebufferSurface / ioSurface).
+    /// Returns the CGImage at full device pixel resolution.
+    public func captureFramebufferIOSurface(device: AnyObject) throws -> CGImage {
+        let ioSel = NSSelectorFromString("io")
+        guard (device as AnyObject).responds(to: ioSel),
+              let ioClient = (device as AnyObject).perform(ioSel)?.takeUnretainedValue() else {
+            throw PrivateFrameworkError.clientCreationFailed("device.io returned nil")
+        }
+
+        let ioPortsSel = NSSelectorFromString("ioPorts")
+        guard (ioClient as AnyObject).responds(to: ioPortsSel),
+              let ports = (ioClient as AnyObject).perform(ioPortsSel)?.takeUnretainedValue() as? NSArray else {
+            throw PrivateFrameworkError.clientCreationFailed("device.io.ioPorts returned nil")
+        }
+
+        // Resolve protocols at runtime (works through ROCK proxy protocol lists)
+        let renderableProto = NSProtocolFromString("SimDisplayIOSurfaceRenderable")
+        let displayRenderableProto = NSProtocolFromString("SimDisplayRenderable")
+
+        let descSel = NSSelectorFromString("descriptor")
+        let stateSel = NSSelectorFromString("state")
+        let displayClassSel = NSSelectorFromString("displayClass")
+        let fbSurfSel = NSSelectorFromString("framebufferSurface")
+        let ioSurfaceSel = NSSelectorFromString("ioSurface")
+
+        for port in ports {
+            let portObj = port as AnyObject
+
+            // Get the port descriptor
+            guard portObj.responds(to: descSel),
+                  let desc = portObj.perform(descSel)?.takeUnretainedValue() else { continue }
+
+            let descObj = desc as AnyObject
+
+            // Check protocol conformance instead of class name (idb's FBFramebuffer.m:59-64)
+            if let proto = displayRenderableProto, !descObj.conforms(to: proto) { continue }
+            if let proto = renderableProto, !descObj.conforms(to: proto) { continue }
+
+            // Check displayClass == 0 for main display (idb's FBFramebuffer.m:65-74)
+            // Must use IMP-based call since ROCK proxy state isn't KVC-compliant.
+            if descObj.responds(to: stateSel),
+               let stateObj = descObj.perform(stateSel)?.takeUnretainedValue() {
+                let stateAny = stateObj as AnyObject
+                if stateAny.responds(to: displayClassSel),
+                   let method = class_getInstanceMethod(type(of: stateAny), displayClassSel) {
+                    typealias DisplayClassFn = @convention(c) (AnyObject, Selector) -> UInt16
+                    let imp = method_getImplementation(method)
+                    let getDisplayClass = unsafeBitCast(imp, to: DisplayClassFn.self)
+                    let displayClass = getDisplayClass(stateAny, displayClassSel)
+                    if displayClass != 0 { continue }
+                }
+            }
+
+            // Try both selectors — ROCK proxy may only support one (idb's FBFramebuffer.m:167-174)
+            // SimDisplayIOSurfaceRenderable-Protocol.h documents: respondsToSelector may return YES
+            // even when underlying object doesn't implement it, so we try both and accept nil.
+            var surface: IOSurface?
+            if descObj.responds(to: fbSurfSel),
+               let obj = descObj.perform(fbSurfSel)?.takeUnretainedValue() {
+                surface = obj as? IOSurface
+            }
+            if surface == nil, descObj.responds(to: ioSurfaceSel),
+               let obj = descObj.perform(ioSurfaceSel)?.takeUnretainedValue() {
+                surface = obj as? IOSurface
+            }
+            guard let surface = surface else { continue }
+
+            // Lock, read pixels into a CGImage, unlock
+            surface.lock(options: .readOnly, seed: nil)
+            defer { surface.unlock(options: .readOnly, seed: nil) }
+
+            let w = surface.width
+            let h = surface.height
+            let bpr = surface.bytesPerRow
+            let base = surface.baseAddress
+
+            guard let ctx = CGContext(
+                data: base,
+                width: w,
+                height: h,
+                bitsPerComponent: 8,
+                bytesPerRow: bpr,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ), let cgImage = ctx.makeImage() else {
+                throw PrivateFrameworkError.clientCreationFailed("Failed to create CGImage from IOSurface \(w)x\(h)")
+            }
+
+            return cgImage
+        }
+
+        throw PrivateFrameworkError.clientCreationFailed(
+            "No display IOSurface found among \(ports.count) IO ports")
     }
 
     // MARK: - AccessibilityPlatformTranslation Framework
