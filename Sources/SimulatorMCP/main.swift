@@ -7,23 +7,34 @@ import SimulatorKit
 /// Races a synchronous operation against a GCD timer. Uses DispatchQueue (not the
 /// Swift cooperative thread pool) so the timeout fires even when the operation blocks
 /// a thread on a synchronous ObjC call that can't be cancelled.
+func log(_ msg: String) {
+    let ts = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
+    FileHandle.standardError.write(Data("[ios-simulator-mcp \(ts)] \(msg)\n".utf8))
+}
+
 func withTimeout<T: Sendable>(
+    _ label: String = "op",
     _ timeout: Duration,
     _ operation: @escaping @Sendable () throws -> T
 ) async throws -> T {
     let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
     return try await withCheckedThrowingContinuation { continuation in
-        // Serializes exactly-once resumption of the continuation.
-        // NSLock + Bool is safe across GCD queues; nonisolated(unsafe) silences
-        // the Sendable diagnostic since we guarantee thread-safety via the lock.
         let lock = NSLock()
         nonisolated(unsafe) var resumed = false
+        let start = CFAbsoluteTimeGetCurrent()
 
         let resume: @Sendable (Result<T, Error>) -> Void = { result in
             lock.lock()
             guard !resumed else { lock.unlock(); return }
             resumed = true
             lock.unlock()
+            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            switch result {
+            case .success:
+                log("withTimeout(\(label)): ok in \(Int(elapsed * 1000))ms")
+            case .failure(let error):
+                log("withTimeout(\(label)): failed after \(Int(elapsed * 1000))ms: \(error)")
+            }
             continuation.resume(with: result)
         }
 
@@ -480,9 +491,9 @@ func handleOpenSimulator() async throws -> CallTool.Result {
 
 func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
 
-    let json = try await withTimeout(.seconds(12)) {
+    let json = try await withTimeout("describe_all", .seconds(12)) {
+        let axpBridge = try AXPAccessibilityBridge(udid: udid)
         let nodes = try axpBridge.accessibilityElements()
         return try TreeSerializer.toJSON(nodes)
     }
@@ -497,8 +508,8 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
         return .init(content: [.text("Missing required parameters: x, y")], isError: true)
     }
 
-    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
-    let json = try await withTimeout(.seconds(12)) {
+    let json = try await withTimeout("describe_point", .seconds(12)) {
+        let axpBridge = try AXPAccessibilityBridge(udid: udid)
         let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
         return try TreeSerializer.toJSON(node)
     }
@@ -776,25 +787,91 @@ if let timeoutStr = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_TIMEO
     SimCtlClient.defaultTimeout = .seconds(Int64(timeoutSecs))
 }
 
-// MARK: - Server setup
+// MARK: - CLI mode
 
-let server = Server(
-    name: "ios-simulator",
-    version: serverVersion,
-    capabilities: .init(tools: .init(listChanged: false))
-)
+/// Run a tool directly from the command line, bypassing the MCP server.
+/// Usage: ios-simulator-mcp cli <tool_name> [key=value ...]
+/// Example: ios-simulator-mcp cli ui_describe_all udid=C7A7BFA8-...
+///          ios-simulator-mcp cli ui_describe_point x=100 y=200
+///          ios-simulator-mcp cli ui_tap x=100 y=200
+func runCLI(_ args: [String]) async {
+    guard let toolName = args.first else {
+        fputs("Usage: ios-simulator-mcp cli <tool_name> [key=value ...]\n", stderr)
+        fputs("Available tools: \(allTools().map(\.name).joined(separator: ", "))\n", stderr)
+        return
+    }
 
-await server.withMethodHandler(ListTools.self) { _ in
-    return .init(tools: allTools())
+    // Parse key=value pairs into MCP arguments
+    var arguments: [String: Value] = [:]
+    for arg in args.dropFirst() {
+        let parts = arg.split(separator: "=", maxSplits: 1)
+        guard parts.count == 2 else {
+            fputs("Warning: ignoring malformed arg '\(arg)' (expected key=value)\n", stderr)
+            continue
+        }
+        let key = String(parts[0])
+        let val = String(parts[1])
+        // Try to parse as number, fall back to string
+        if let d = Double(val), val.contains(".") || val.contains("e") {
+            arguments[key] = .double(d)
+        } else if let i = Int(val) {
+            arguments[key] = .int(i)
+        } else if val == "true" {
+            arguments[key] = .bool(true)
+        } else if val == "false" {
+            arguments[key] = .bool(false)
+        } else {
+            arguments[key] = .string(val)
+        }
+    }
+
+    log("CLI: running tool '\(toolName)' with args: \(arguments)")
+    let params = CallTool.Parameters(name: toolName, arguments: arguments.isEmpty ? nil : arguments)
+    let result = await handleToolCall(params)
+
+    // Print result to stdout
+    for content in result.content {
+        switch content {
+        case .text(let text):
+            print(text)
+        case .image:
+            print("<image data omitted>")
+        default:
+            print("<unknown content type>")
+        }
+    }
+
+    if result.isError == true {
+        fputs("Tool returned error\n", stderr)
+    }
+    log("CLI: done")
 }
 
-await server.withMethodHandler(CallTool.self) { params in
-    return await handleToolCall(params)
+// MARK: - Entry point
+
+let args = CommandLine.arguments
+if args.count >= 2 && args[1] == "cli" {
+    await runCLI(Array(args.dropFirst(2)))
+} else {
+    // Normal MCP server mode
+    let server = Server(
+        name: "ios-simulator",
+        version: serverVersion,
+        capabilities: .init(tools: .init(listChanged: false))
+    )
+
+    await server.withMethodHandler(ListTools.self) { _ in
+        return .init(tools: allTools())
+    }
+
+    await server.withMethodHandler(CallTool.self) { params in
+        return await handleToolCall(params)
+    }
+
+    let transport = StdioTransport()
+    try await server.start(transport: transport)
+
+    // Keep the process alive — StdioTransport will handle the event loop.
+    // If the transport closes (stdin EOF), the process should exit.
+    try await Task.sleep(for: .seconds(365 * 24 * 3600))
 }
-
-let transport = StdioTransport()
-try await server.start(transport: transport)
-
-// Keep the process alive — StdioTransport will handle the event loop.
-// If the transport closes (stdin EOF), the process should exit.
-try await Task.sleep(for: .seconds(365 * 24 * 3600))

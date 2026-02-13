@@ -217,13 +217,14 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     /// Loads the AccessibilityPlatformTranslation private framework. Must be called before using AXP APIs.
     public func ensureAXPLoaded() throws {
+        // CoreSimulator must be loaded first (for SimDevice).
+        // Called outside our lock because ensureLoaded() acquires it internally.
+        try ensureLoaded()
+
         lock.lock()
         defer { lock.unlock() }
 
         guard !axpLoaded else { return }
-
-        // CoreSimulator must be loaded first (for SimDevice)
-        try ensureLoaded()
 
         guard let handle = dlopen(Self.axpPath, RTLD_LAZY) else {
             throw PrivateFrameworkError.frameworkNotFound(Self.axpPath)
