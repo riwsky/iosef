@@ -40,6 +40,10 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     private let lock = NSLock()
     private var deviceCache: [String: AnyObject] = [:]
 
+    // Cached CoreSimulator singletons (populated on first device access)
+    private var cachedServiceContext: AnyObject?
+    private var cachedDeviceSet: AnyObject?
+
     // MARK: - Resolved function pointers from SimulatorKit
 
     private(set) var messageForMouseNSEvent: (
@@ -111,16 +115,16 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         return device
     }
 
-    private func lookUpDeviceUncached(udid: String) throws -> AnyObject {
-        try ensureLoaded()
+    // MARK: - CoreSimulator context helpers (cached)
 
-        // Get SimServiceContext class
+    /// Returns the shared SimServiceContext, creating and caching on first call.
+    private func getServiceContext() throws -> AnyObject {
+        if let ctx = cachedServiceContext { return ctx }
+
         guard let contextClass: AnyClass = objc_lookUpClass("SimServiceContext") else {
             throw PrivateFrameworkError.classNotFound("SimServiceContext")
         }
 
-        // Call +[SimServiceContext sharedServiceContextForDeveloperDir:error:]
-        // Use IMP-based calling to properly handle NSError** parameter
         let contextSel = NSSelectorFromString("sharedServiceContextForDeveloperDir:error:")
         guard let contextMethod = class_getClassMethod(contextClass, contextSel) else {
             throw PrivateFrameworkError.classNotFound("SimServiceContext.sharedServiceContextForDeveloperDir:error:")
@@ -132,12 +136,20 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
         let developerDir = "/Applications/Xcode.app/Contents/Developer" as NSString
         var contextError: NSError?
-        guard let serviceContext = getContext(contextClass, contextSel, developerDir, &contextError) else {
+        guard let ctx = getContext(contextClass, contextSel, developerDir, &contextError) else {
             throw PrivateFrameworkError.clientCreationFailed(
                 "Could not create SimServiceContext: \(contextError?.localizedDescription ?? "unknown")")
         }
 
-        // Call -[SimServiceContext defaultDeviceSetWithError:]
+        cachedServiceContext = ctx
+        return ctx
+    }
+
+    /// Returns the default SimDeviceSet, creating and caching on first call.
+    private func getDeviceSet() throws -> AnyObject {
+        if let ds = cachedDeviceSet { return ds }
+
+        let serviceContext = try getServiceContext()
         let deviceSetSel = NSSelectorFromString("defaultDeviceSetWithError:")
         guard let deviceSetMethod = class_getInstanceMethod(type(of: serviceContext as AnyObject), deviceSetSel) else {
             throw PrivateFrameworkError.clientCreationFailed("defaultDeviceSetWithError: not found")
@@ -148,17 +160,29 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         let getDeviceSet = unsafeBitCast(deviceSetImp, to: DeviceSetFn.self)
 
         var dsError: NSError?
-        guard let deviceSet = getDeviceSet(serviceContext, deviceSetSel, &dsError) else {
+        guard let ds = getDeviceSet(serviceContext, deviceSetSel, &dsError) else {
             throw PrivateFrameworkError.clientCreationFailed(
                 "Could not get default device set: \(dsError?.localizedDescription ?? "unknown")")
         }
 
-        // Get devicesByUDID dictionary
+        cachedDeviceSet = ds
+        return ds
+    }
+
+    /// Returns the devicesByUDID dictionary from the default device set.
+    private func getDevicesMap() throws -> NSDictionary {
+        let deviceSet = try getDeviceSet()
         guard let devicesMap = (deviceSet as AnyObject).value(forKey: "devicesByUDID") as? NSDictionary else {
             throw PrivateFrameworkError.clientCreationFailed("Could not get devices map from device set")
         }
+        return devicesMap
+    }
 
-        // Look up by NSUUID
+    private func lookUpDeviceUncached(udid: String) throws -> AnyObject {
+        try ensureLoaded()
+
+        let devicesMap = try getDevicesMap()
+
         guard let nsUUID = NSUUID(uuidString: udid) else {
             throw PrivateFrameworkError.deviceNotFound(udid)
         }
@@ -167,6 +191,38 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         }
 
         return device as AnyObject
+    }
+
+    /// Device state constants from CoreSimulator's SimDeviceState enum.
+    private static let stateNames: [Int: String] = [
+        0: "Creating",
+        1: "Shutdown",
+        2: "Booting",
+        3: "Booted",
+        4: "ShuttingDown",
+    ]
+
+    /// Returns all devices from the default device set.
+    public func allDevices() throws -> [(udid: String, name: String, state: String, isAvailable: Bool)] {
+        try ensureLoaded()
+
+        let devicesMap = try getDevicesMap()
+        var result: [(udid: String, name: String, state: String, isAvailable: Bool)] = []
+
+        for (key, value) in devicesMap {
+            guard let nsUUID = key as? NSUUID else { continue }
+            let device = value as AnyObject
+
+            let udid = nsUUID.uuidString
+            let name = (device.value(forKey: "name") as? String) ?? "Unknown"
+            let stateNum = (device.value(forKey: "state") as? NSNumber)?.intValue ?? 1
+            let stateName = Self.stateNames[stateNum] ?? "Unknown"
+            let available = (device.value(forKey: "available") as? NSNumber)?.boolValue ?? true
+
+            result.append((udid: udid, name: name, state: stateName, isAvailable: available))
+        }
+
+        return result
     }
 
     /// Gets the screen size in pixels from a SimDevice's deviceType.
@@ -226,6 +282,82 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         _ = Unmanaged.passUnretained(allocated)
 
         return client
+    }
+
+    // MARK: - App Install & Launch
+
+    /// Installs an app bundle on the given SimDevice.
+    /// Calls -[SimDevice installApplication:withOptions:error:] via IMP.
+    public func installApp(device: AnyObject, appURL: URL) throws {
+        let sel = NSSelectorFromString("installApplication:withOptions:error:")
+        guard let method = class_getInstanceMethod(type(of: device as AnyObject), sel) else {
+            throw PrivateFrameworkError.classNotFound("SimDevice.installApplication:withOptions:error:")
+        }
+
+        typealias InstallFn = @convention(c) (AnyObject, Selector, AnyObject, AnyObject, UnsafeMutablePointer<NSError?>?) -> ObjCBool
+        let imp = method_getImplementation(method)
+        let install = unsafeBitCast(imp, to: InstallFn.self)
+
+        let nsURL = appURL as NSURL
+        let options = NSDictionary()
+        var installError: NSError?
+        let success = install(device, sel, nsURL, options, &installError)
+
+        if !success.boolValue {
+            // Retry once for Apple bug 46691107 (first install after uninstall can fail)
+            var retryError: NSError?
+            let retrySuccess = install(device, sel, nsURL, options, &retryError)
+            if !retrySuccess.boolValue {
+                throw PrivateFrameworkError.clientCreationFailed(
+                    "installApplication failed: \(retryError?.localizedDescription ?? installError?.localizedDescription ?? "unknown")")
+            }
+        }
+    }
+
+    /// Launches an app on the given SimDevice by bundle identifier.
+    /// Calls -[SimDevice launchApplicationAsyncWithID:options:completionQueue:completionHandler:] via IMP.
+    /// Returns the launched process PID.
+    public func launchApp(device: AnyObject, bundleID: String, terminateExisting: Bool = false) throws -> Int32 {
+        let sel = NSSelectorFromString("launchApplicationAsyncWithID:options:completionQueue:completionHandler:")
+        guard let method = class_getInstanceMethod(type(of: device as AnyObject), sel) else {
+            throw PrivateFrameworkError.classNotFound("SimDevice.launchApplicationAsyncWithID:options:completionQueue:completionHandler:")
+        }
+
+        typealias LaunchFn = @convention(c) (AnyObject, Selector, NSString, NSDictionary, DispatchQueue, Any) -> Void
+        let imp = method_getImplementation(method)
+        let launch = unsafeBitCast(imp, to: LaunchFn.self)
+
+        var options: [String: Any] = [:]
+        if terminateExisting {
+            options["terminate_running_process"] = true as NSNumber
+        }
+
+        let group = DispatchGroup()
+        group.enter()
+
+        let queue = DispatchQueue(label: "com.simulator-mcp.launch.callback")
+        var resultPID: Int32 = -1
+        var resultError: NSError?
+
+        let completionBlock: @convention(block) (NSError?, Int32) -> Void = { error, pid in
+            resultError = error
+            resultPID = pid
+            group.leave()
+        }
+        let completionObj: Any = completionBlock
+
+        launch(device, sel, bundleID as NSString, options as NSDictionary, queue, completionObj)
+
+        let waitResult = group.wait(timeout: .now() + 30.0)
+        if waitResult == .timedOut {
+            throw TimeoutError.processTimedOut(command: "launchApplication(\(bundleID))", timeoutSeconds: 30.0)
+        }
+
+        if let error = resultError {
+            throw PrivateFrameworkError.clientCreationFailed("launchApplication failed: \(error.localizedDescription)")
+        }
+
+        return resultPID
     }
 
     // MARK: - AccessibilityPlatformTranslation Framework

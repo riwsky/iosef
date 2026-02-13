@@ -1,18 +1,16 @@
 import Foundation
 
-/// Represents a simulated device from simctl list output.
-public struct DeviceInfo: Codable, Sendable {
+/// Represents a simulated device.
+public struct DeviceInfo: Sendable {
     public let name: String
     public let udid: String
     public let state: String
     public let isAvailable: Bool?
 
-    enum CodingKeys: String, CodingKey {
-        case name, udid, state, isAvailable
+    public init(name: String, udid: String, state: String, isAvailable: Bool?) {
+        self.name = name
+        self.udid = udid
+        self.state = state
+        self.isAvailable = isAvailable
     }
-}
-
-/// Top-level response from `simctl list devices -j`.
-public struct DeviceListResponse: Codable, Sendable {
-    public let devices: [String: [DeviceInfo]]
 }

@@ -131,8 +131,8 @@ actor SimulatorCache {
     /// 1. Explicit udid parameter
     /// 2. In-memory cache (for MCP server mode)
     /// 3. Filesystem cache at /tmp (for CLI mode)
-    /// 4. Fresh `simctl list devices -j` call
-    func resolveDeviceID(_ udid: String?) async throws -> String {
+    /// 4. Direct CoreSimulator API call
+    func resolveDeviceID(_ udid: String?) throws -> String {
         if let udid = udid { return udid }
 
         let now = ContinuousClock.now
@@ -147,7 +147,7 @@ actor SimulatorCache {
             return fsDevice.udid
         }
 
-        let device = try await SimCtlClient.resolveDevice(nil)
+        let device = try SimCtlClient.resolveDevice(nil)
         deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
         Self.writeDeviceCacheToDisk(udid: device.udid, name: device.name)
         return device.udid
@@ -374,7 +374,7 @@ func allTools() -> [Tool] {
     if !isFiltered("screenshot") {
         tools.append(Tool(
             name: "screenshot",
-            description: "Takes a screenshot of the iOS Simulator",
+            description: "Takes a screenshot of the iOS Simulator and saves to a file",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -388,65 +388,10 @@ func allTools() -> [Tool] {
                         "enum": .array([.string("png"), .string("tiff"), .string("bmp"), .string("gif"), .string("jpeg")]),
                         "description": .string("Image format. Default is png."),
                     ]),
-                    "display": .object([
-                        "type": .string("string"),
-                        "enum": .array([.string("internal"), .string("external")]),
-                        "description": .string("Display to capture (internal or external)."),
-                    ]),
-                    "mask": .object([
-                        "type": .string("string"),
-                        "enum": .array([.string("ignored"), .string("alpha"), .string("black")]),
-                        "description": .string("For non-rectangular displays, handle the mask by policy"),
-                    ]),
                     "udid": udidSchema,
                 ]),
                 "required": .array([.string("output_path")]),
             ])
-        ))
-    }
-
-    if !isFiltered("record_video") {
-        tools.append(Tool(
-            name: "record_video",
-            description: "Records a video of the iOS Simulator",
-            inputSchema: .object([
-                "type": .string("object"),
-                "properties": .object([
-                    "output_path": .object([
-                        "type": .string("string"),
-                        "maxLength": .int(1024),
-                        "description": .string("Optional output path for the recording"),
-                    ]),
-                    "codec": .object([
-                        "type": .string("string"),
-                        "enum": .array([.string("h264"), .string("hevc")]),
-                        "description": .string("Codec type. Default is hevc."),
-                    ]),
-                    "display": .object([
-                        "type": .string("string"),
-                        "enum": .array([.string("internal"), .string("external")]),
-                        "description": .string("Display to capture."),
-                    ]),
-                    "mask": .object([
-                        "type": .string("string"),
-                        "enum": .array([.string("ignored"), .string("alpha"), .string("black")]),
-                        "description": .string("Mask policy for non-rectangular displays."),
-                    ]),
-                    "force": .object([
-                        "type": .string("boolean"),
-                        "description": .string("Force overwrite if file exists."),
-                    ]),
-                    "udid": udidSchema,
-                ]),
-            ])
-        ))
-    }
-
-    if !isFiltered("stop_recording") {
-        tools.append(Tool(
-            name: "stop_recording",
-            description: "Stops the simulator video recording",
-            inputSchema: .object(["type": .string("object"), "properties": .object([:])])
         ))
     }
 
@@ -518,10 +463,6 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleUIView(params)
         case "screenshot":
             return try await handleScreenshot(params)
-        case "record_video":
-            return try await handleRecordVideo(params)
-        case "stop_recording":
-            return try await handleStopRecording()
         case "install_app":
             return try await handleInstallApp(params)
         case "launch_app":
@@ -537,7 +478,7 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
 // MARK: - Tool implementations
 
 func handleGetBootedSimID() async throws -> CallTool.Result {
-    let device = try await SimCtlClient.getBootedDevice()
+    let device = try SimCtlClient.getBootedDevice()
     return .init(content: [.text("Booted Simulator: \"\(device.name)\". UUID: \"\(device.udid)\"")])
 }
 
@@ -651,84 +592,22 @@ func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result
 }
 
 func handleScreenshot(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let udid = try SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
     guard let outputPath = params.arguments?["output_path"]?.stringValue else {
         return .init(content: [.text("Missing required parameter: output_path")], isError: true)
     }
 
     let absolutePath = ensureAbsolutePath(outputPath)
+    let format = params.arguments?["type"]?.stringValue ?? "png"
 
-    var args = ["simctl", "io", udid, "screenshot"]
+    try ScreenCapture.captureToFile(udid: udid, outputPath: absolutePath, format: format)
 
-    if let type = params.arguments?["type"]?.stringValue {
-        args.append("--type=\(type)")
-    }
-    if let display = params.arguments?["display"]?.stringValue {
-        args.append("--display=\(display)")
-    }
-    if let mask = params.arguments?["mask"]?.stringValue {
-        args.append("--mask=\(mask)")
-    }
-
-    args.append(contentsOf: ["--", absolutePath])
-
-    // simctl screenshot outputs success message to stderr
-    let result = try await SimCtlClient.run("/usr/bin/xcrun", arguments: args)
-    let output = result.stderr.isEmpty ? result.stdout : result.stderr
-
-    return .init(content: [.text(output)])
-}
-
-func handleRecordVideo(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let defaultFileName = "simulator_recording_\(Int(Date().timeIntervalSince1970 * 1000)).mp4"
-    let outputPath = ensureAbsolutePath(params.arguments?["output_path"]?.stringValue ?? defaultFileName)
-
-    var args = ["simctl", "io", "booted", "recordVideo"]
-
-    if let codec = params.arguments?["codec"]?.stringValue {
-        args.append("--codec=\(codec)")
-    }
-    if let display = params.arguments?["display"]?.stringValue {
-        args.append("--display=\(display)")
-    }
-    if let mask = params.arguments?["mask"]?.stringValue {
-        args.append("--mask=\(mask)")
-    }
-    if let forceValue = params.arguments?["force"], Bool(forceValue) == true {
-        args.append("--force")
-    }
-
-    args.append(contentsOf: ["--", outputPath])
-
-    // Start recording as a background process
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    process.arguments = args
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-
-    try process.run()
-
-    // Wait briefly for recording to start
-    try await Task.sleep(for: .seconds(3))
-
-    return .init(content: [
-        .text("Recording started. The video will be saved to: \(outputPath)\nTo stop recording, use the stop_recording command.")
-    ])
-}
-
-func handleStopRecording() async throws -> CallTool.Result {
-    _ = try await SimCtlClient.run("/usr/bin/pkill", arguments: ["-SIGINT", "-f", "simctl.*recordVideo"])
-
-    // Wait for video to finalize
-    try await Task.sleep(for: .seconds(1))
-
-    return .init(content: [.text("Recording stopped successfully.")])
+    return .init(content: [.text("Screenshot saved to \(absolutePath)")])
 }
 
 func handleInstallApp(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let udid = try SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
     guard let appPath = params.arguments?["app_path"]?.stringValue else {
         return .init(content: [.text("Missing required parameter: app_path")], isError: true)
@@ -747,35 +626,32 @@ func handleInstallApp(_ params: CallTool.Parameters) async throws -> CallTool.Re
         return .init(content: [.text("App bundle not found at: \(absolutePath)")], isError: true)
     }
 
-    _ = try await SimCtlClient.simctl("install", udid, absolutePath)
+    let bridge = PrivateFrameworkBridge.shared
+    let device = try bridge.lookUpDevice(udid: udid)
+    try bridge.installApp(device: device, appURL: URL(fileURLWithPath: absolutePath))
 
     return .init(content: [.text("App installed successfully from: \(absolutePath)")])
 }
 
 func handleLaunchApp(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try await SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let udid = try SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
     guard let bundleID = params.arguments?["bundle_id"]?.stringValue else {
         return .init(content: [.text("Missing required parameter: bundle_id")], isError: true)
     }
 
-    var args = ["simctl", "launch"]
-
+    let terminateExisting: Bool
     if let terminateValue = params.arguments?["terminate_running"], Bool(terminateValue) == true {
-        args.append("--terminate-running-process")
+        terminateExisting = true
+    } else {
+        terminateExisting = false
     }
 
-    args.append(contentsOf: [udid, bundleID])
+    let bridge = PrivateFrameworkBridge.shared
+    let device = try bridge.lookUpDevice(udid: udid)
+    let pid = try bridge.launchApp(device: device, bundleID: bundleID, terminateExisting: terminateExisting)
 
-    let result = try await SimCtlClient.run("/usr/bin/xcrun", arguments: args)
-
-    // Extract PID from output if available
-    if let match = result.stdout.range(of: #"^\d+"#, options: .regularExpression) {
-        let pid = result.stdout[match]
-        return .init(content: [.text("App \(bundleID) launched successfully with PID: \(pid)")])
-    }
-
-    return .init(content: [.text("App \(bundleID) launched successfully")])
+    return .init(content: [.text("App \(bundleID) launched successfully with PID: \(pid)")])
 }
 
 // MARK: - Default device name from VCS root

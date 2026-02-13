@@ -1,6 +1,7 @@
 import Foundation
 
-/// Async wrapper for running shell commands (primarily xcrun simctl).
+/// Shell command runner (for `open -a Simulator.app` only) and device resolution
+/// via direct CoreSimulator API calls through PrivateFrameworkBridge.
 public enum SimCtlClient {
 
     /// Default timeout for process execution. Can be overridden via `IOS_SIMULATOR_MCP_TIMEOUT` env var.
@@ -12,7 +13,7 @@ public enum SimCtlClient {
     }
 
     /// Runs a command with arguments and returns stdout/stderr.
-    /// Times out after `timeout` (defaults to `defaultTimeout`), killing the process if exceeded.
+    /// Used only for `open -a Simulator.app`.
     public static func run(_ command: String, arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
         let timeout = timeout ?? defaultTimeout
         let shortArgs = arguments.prefix(4).joined(separator: " ")
@@ -30,9 +31,7 @@ public enum SimCtlClient {
         let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
 
         try process.run()
-        fputs("[SimCtl] process launched (pid \(process.processIdentifier)), reading output...\n", stderr)
 
-        // Schedule timeout: capture only PID (Int32, Sendable) and a thread-safe flag
         let pid = process.processIdentifier
         let timedOut = TimeoutFlag()
         let timeoutItem = DispatchWorkItem {
@@ -41,13 +40,11 @@ public enum SimCtlClient {
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutItem)
 
-        // Read output (blocks until write end closes when process exits)
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
 
         process.waitUntilExit()
         timeoutItem.cancel()
-        fputs("[SimCtl] exited with status \(process.terminationStatus), stdout=\(stdoutData.count)B stderr=\(stderrData.count)B\n", stderr)
 
         if timedOut.value {
             let desc = ([command] + arguments).joined(separator: " ")
@@ -87,121 +84,79 @@ public enum SimCtlClient {
         }
     }
 
-    /// Runs xcrun simctl with the given arguments.
-    public static func simctl(_ arguments: String...) async throws -> CommandResult {
-        try await run("/usr/bin/xcrun", arguments: ["simctl"] + arguments)
-    }
-
-    /// Runs xcrun simctl with an array of arguments.
-    public static func simctl(_ arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
-        try await run("/usr/bin/xcrun", arguments: ["simctl"] + arguments, timeout: timeout)
-    }
-
     /// Default device name derived from VCS root at startup.
     /// Set once before the server starts handling requests.
     nonisolated(unsafe) public static var defaultDeviceName: String?
 
-    /// Finds an available simulator matching the given name, checking `name` then `name-main`.
-    public static func findDeviceByName(_ name: String) async throws -> DeviceInfo? {
-        let result = try await simctl("list", "devices", "-j")
-        guard let data = result.stdout.data(using: .utf8) else { return nil }
-        let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
+    // MARK: - Device listing via direct CoreSimulator API
 
+    /// Gets all devices from CoreSimulator as DeviceInfo structs.
+    private static func getAllDevices() throws -> [DeviceInfo] {
+        try PrivateFrameworkBridge.shared.allDevices().map {
+            DeviceInfo(name: $0.name, udid: $0.udid, state: $0.state, isAvailable: $0.isAvailable)
+        }
+    }
+
+    /// Finds an available simulator matching the given name, checking `name` then `name-main`.
+    public static func findDeviceByName(_ name: String) throws -> DeviceInfo? {
+        let devices = try getAllDevices()
         let candidates = [name, "\(name)-main"]
         for candidate in candidates {
-            for (_, devices) in deviceList.devices {
-                for device in devices where device.name == candidate && (device.isAvailable ?? false) {
-                    return device
-                }
+            if let device = devices.first(where: { $0.name == candidate && ($0.isAvailable ?? false) }) {
+                return device
             }
         }
         return nil
     }
 
     /// Gets the booted device info.
-    public static func getBootedDevice() async throws -> DeviceInfo {
-        let result = try await simctl("list", "devices", "-j")
-        guard let data = result.stdout.data(using: .utf8) else {
-            throw SimCtlError.parseError("Failed to parse simctl output as UTF-8")
+    public static func getBootedDevice() throws -> DeviceInfo {
+        let devices = try getAllDevices()
+        if let booted = devices.first(where: { $0.state == "Booted" }) {
+            return booted
         }
+        throw SimCtlError.noBootedSimulator
+    }
 
-        let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
+    /// Resolves a device with full info (UDID + name).
+    /// Checks: explicit UDID → default device by name → first booted simulator.
+    public static func resolveDevice(_ udid: String?) throws -> DeviceInfo {
+        let devices = try getAllDevices()
 
-        for (_, devices) in deviceList.devices {
-            for device in devices where device.state == "Booted" {
+        if let udid = udid {
+            if let device = devices.first(where: { $0.udid.caseInsensitiveCompare(udid) == .orderedSame }) {
                 return device
             }
+            return DeviceInfo(name: udid, udid: udid, state: "Unknown", isAvailable: nil)
+        }
+
+        // Try default device by name (set from VCS root at startup)
+        if let name = defaultDeviceName {
+            let candidates = [name, "\(name)-main"]
+            for candidate in candidates {
+                if let device = devices.first(where: { $0.name == candidate && ($0.isAvailable ?? false) }) {
+                    return device
+                }
+            }
+        }
+
+        // Fall back to first booted simulator
+        if let booted = devices.first(where: { $0.state == "Booted" }) {
+            return booted
         }
 
         throw SimCtlError.noBootedSimulator
     }
 
     /// Gets the UDID of the booted device, or uses the provided one.
-    public static func resolveDeviceID(_ udid: String?) async throws -> String {
-        let device = try await resolveDevice(udid)
-        return device.udid
-    }
-
-    /// Resolves a device with full info (UDID + name) in a single `simctl list devices -j` call.
-    /// Checks: explicit UDID → default device by name → first booted simulator.
-    public static func resolveDevice(_ udid: String?) async throws -> DeviceInfo {
-        if let udid = udid {
-            // Explicit UDID: still need one simctl call to get the name
-            let result = try await simctl("list", "devices", "-j")
-            guard let data = result.stdout.data(using: .utf8) else {
-                throw SimCtlError.parseError("Failed to parse simctl output as UTF-8")
-            }
-            let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
-            for (_, devices) in deviceList.devices {
-                for device in devices where device.udid == udid {
-                    return device
-                }
-            }
-            // UDID given but not found — return minimal info
-            return DeviceInfo(name: udid, udid: udid, state: "Unknown", isAvailable: nil)
-        }
-
-        // Single simctl call to get all device info
-        let result = try await simctl("list", "devices", "-j")
-        guard let data = result.stdout.data(using: .utf8) else {
-            throw SimCtlError.parseError("Failed to parse simctl output as UTF-8")
-        }
-        let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
-
-        // Try default device by name (set from VCS root at startup)
-        if let name = defaultDeviceName {
-            let candidates = [name, "\(name)-main"]
-            for candidate in candidates {
-                for (_, devices) in deviceList.devices {
-                    for device in devices where device.name == candidate && (device.isAvailable ?? false) {
-                        return device
-                    }
-                }
-            }
-        }
-
-        // Fall back to first booted simulator
-        for (_, devices) in deviceList.devices {
-            for device in devices where device.state == "Booted" {
-                return device
-            }
-        }
-
-        throw SimCtlError.noBootedSimulator
+    public static func resolveDeviceID(_ udid: String?) throws -> String {
+        try resolveDevice(udid).udid
     }
 
     /// Gets the device name for a given UDID.
-    public static func getDeviceName(udid: String) async throws -> String? {
-        let result = try await simctl("list", "devices", "-j")
-        guard let data = result.stdout.data(using: .utf8) else { return nil }
-        let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
-
-        for (_, devices) in deviceList.devices {
-            for device in devices where device.udid == udid {
-                return device.name
-            }
-        }
-        return nil
+    public static func getDeviceName(udid: String) throws -> String? {
+        let devices = try getAllDevices()
+        return devices.first(where: { $0.udid.caseInsensitiveCompare(udid) == .orderedSame })?.name
     }
 
     public enum SimCtlError: Error, LocalizedError {
