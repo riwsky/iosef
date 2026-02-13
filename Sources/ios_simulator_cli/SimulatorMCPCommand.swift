@@ -848,17 +848,38 @@ struct MCPServe: AsyncParsableCommand {
         let transport = StdioTransport()
         try await server.start(transport: transport)
 
-        // Wait for SIGINT/SIGTERM instead of sleeping forever.
+        // Wait for SIGINT/SIGTERM/SIGHUP or stdin EOF instead of sleeping forever.
         // This lets us run deterministic cleanup before exit.
         nonisolated(unsafe) var signalSources: [DispatchSourceSignal] = []
         let sigStream = AsyncStream<Int32> { continuation in
-            for sig: Int32 in [SIGINT, SIGTERM] {
+            for sig: Int32 in [SIGINT, SIGTERM, SIGHUP] {
                 signal(sig, SIG_IGN)   // ignore default handler
                 let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
                 source.setEventHandler { continuation.yield(sig) }
                 source.resume()
                 signalSources.append(source)
             }
+
+            // Detect parent disconnect: poll stdin for POLLHUP (pipe closed).
+            // macOS requires events=POLLIN for POLLHUP to be reported in revents.
+            // poll() only checks fd state — doesn't read data — so it won't
+            // interfere with StdioTransport's readLoop.
+            DispatchQueue.global(qos: .utility).async {
+                var fds = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+                while true {
+                    let ret = withUnsafeMutablePointer(to: &fds) { poll($0, 1, 1000) }
+                    if ret > 0 {
+                        let r = Int32(fds.revents)
+                        if (r & POLLHUP) != 0 || (r & POLLNVAL) != 0 || (r & POLLERR) != 0 {
+                            continuation.yield(SIGHUP)
+                            break
+                        }
+                        fds.revents = 0  // POLLIN only (data for transport) — keep polling
+                    }
+                    if ret < 0 && errno != EINTR { break }
+                }
+            }
+
             continuation.onTermination = { @Sendable _ in
                 for source in signalSources { source.cancel() }
             }
