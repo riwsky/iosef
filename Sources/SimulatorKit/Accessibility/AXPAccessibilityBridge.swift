@@ -52,7 +52,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let dispatcher = delegate as! AXPTranslationDispatcher
 
         let token = UUID().uuidString
-        dispatcher.registerDevice(forToken: token)
+        dispatcher.registerDevice(forToken: token, deadline: deadline)
         defer { dispatcher.unregisterToken(token) }
 
         try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
@@ -95,7 +95,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let dispatcher = delegate as! AXPTranslationDispatcher
 
         let token = UUID().uuidString
-        dispatcher.registerDevice(forToken: token)
+        dispatcher.registerDevice(forToken: token, deadline: deadline)
         defer { dispatcher.unregisterToken(token) }
 
         let point = CGPoint(x: x, y: y)
@@ -298,6 +298,7 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
     private let bridge: PrivateFrameworkBridge
     private let lock = NSLock()
     private var tokenToDevice: [String: AnyObject] = [:]  // token -> SimDevice
+    private var tokenToDeadline: [String: ContinuousClock.Instant] = [:]  // token -> deadline
     private let defaultDevice: AnyObject  // SimDevice
 
     init(device: AnyObject, bridge: PrivateFrameworkBridge) {
@@ -306,16 +307,20 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
         super.init()
     }
 
-    func registerDevice(forToken token: String) {
+    func registerDevice(forToken token: String, deadline: ContinuousClock.Instant? = nil) {
         lock.lock()
         defer { lock.unlock() }
         tokenToDevice[token] = defaultDevice
+        if let deadline = deadline {
+            tokenToDeadline[token] = deadline
+        }
     }
 
     func unregisterToken(_ token: String) {
         lock.lock()
         defer { lock.unlock() }
         tokenToDevice.removeValue(forKey: token)
+        tokenToDeadline.removeValue(forKey: token)
     }
 
     private func device(forToken token: String) -> AnyObject? {
@@ -324,11 +329,19 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
         return tokenToDevice[token]
     }
 
+    private func deadline(forToken token: String) -> ContinuousClock.Instant? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tokenToDeadline[token]
+    }
+
     // MARK: - AXPTranslationTokenDelegateHelper
 
     /// Returns a synchronous callback block that bridges to SimDevice.sendAccessibilityRequestAsync.
     @objc func accessibilityTranslationDelegateBridgeCallbackWithToken(_ token: NSString) -> Any {
-        let device = self.device(forToken: token as String)
+        let tokenStr = token as String
+        let device = self.device(forToken: tokenStr)
+        let deadline = self.deadline(forToken: tokenStr)
 
         let callback: @convention(block) (AnyObject) -> AnyObject = { [weak self] (request: AnyObject) -> AnyObject in
             guard let self = self, let dev = device else {
@@ -336,9 +349,24 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
                 return Self.emptyAXPResponse()
             }
 
+            // Compute per-call timeout from remaining deadline budget
+            let xpcTimeout: Double
+            if let deadline = deadline {
+                let now = ContinuousClock.now
+                let remaining = deadline - now
+                let remainingSecs = Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18
+                if remainingSecs <= 0 {
+                    FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC callback: deadline already passed, returning empty\n".utf8))
+                    return Self.emptyAXPResponse()
+                }
+                xpcTimeout = min(remainingSecs, 10.0)
+            } else {
+                xpcTimeout = 10.0
+            }
+
             let start = CFAbsoluteTimeGetCurrent()
             do {
-                let response = try self.bridge.sendAccessibilityRequest(request, toDevice: dev)
+                let response = try self.bridge.sendAccessibilityRequest(request, toDevice: dev, timeoutSeconds: xpcTimeout)
                 let elapsed = CFAbsoluteTimeGetCurrent() - start
                 if elapsed > 1.0 {
                     FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC call slow: \(Int(elapsed * 1000))ms\n".utf8))

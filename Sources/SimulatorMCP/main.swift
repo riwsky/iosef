@@ -2,6 +2,30 @@ import Foundation
 import MCP
 import SimulatorKit
 
+// MARK: - Async timeout utility
+
+/// Races an operation against a deadline. If the operation doesn't complete within
+/// `timeout`, throws TimeoutError. The blocked operation continues in the background
+/// (ObjC synchronous calls can't be force-cancelled), but the caller gets unblocked.
+func withTimeout<T: Sendable>(
+    _ timeout: Duration,
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+    return try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(for: timeout)
+            throw TimeoutError.accessibilityTimedOut(timeoutSeconds: seconds)
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw CancellationError()
+        }
+        return result
+    }
+}
+
 // MARK: - Configuration
 
 let serverVersion = "2.0.0"
@@ -442,8 +466,10 @@ func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
 
-    let nodes = try axpBridge.accessibilityElements()
-    let json = try TreeSerializer.toJSON(nodes)
+    let json = try await withTimeout(.seconds(12)) {
+        let nodes = try axpBridge.accessibilityElements()
+        return try TreeSerializer.toJSON(nodes)
+    }
     return .init(content: [.text(json)])
 }
 
@@ -456,8 +482,10 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
     }
 
     let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
-    let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
-    let json = try TreeSerializer.toJSON(node)
+    let json = try await withTimeout(.seconds(12)) {
+        let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
+        return try TreeSerializer.toJSON(node)
+    }
     return .init(content: [.text(json)])
 }
 
