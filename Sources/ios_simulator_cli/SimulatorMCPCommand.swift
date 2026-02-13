@@ -274,7 +274,7 @@ func allTools() -> [Tool] {
     if !isFiltered("ui_describe_all") {
         tools.append(Tool(
             name: "ui_describe_all",
-            description: "Describes accessibility information for the entire screen in the iOS Simulator",
+            description: "Describes accessibility information for the entire screen in the iOS Simulator. Coordinates are (center±half-size) in iOS points — the center value is the tap target.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -925,7 +925,7 @@ struct UIDescribeAll: AsyncParsableCommand {
             including roles, labels, frames, and values. Use this to discover element \
             positions for ui_tap, or to understand the current UI state.
 
-            Coordinates are center-points in iOS points — pass them directly to ui_tap.
+            Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
             Use --json for machine-readable output. Combine with jq to filter:
 
@@ -954,7 +954,7 @@ struct UIDescribePoint: AsyncParsableCommand {
             Returns the accessibility element at the given coordinates. Useful for \
             identifying what's at a specific point on screen.
 
-            Coordinates are in iOS points (same system as ui_tap and ui_describe_all).
+            Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
             Examples:
               ios_simulator_cli ui_describe_point --x 200 --y 400

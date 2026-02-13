@@ -146,11 +146,13 @@ public enum TreeSerializer {
                 parts.append("\"\(name)\"")
             }
 
-            // @ (x, y) — center point of the frame
+            // (cx±hw, cy±hh) — center point ± half-size
             if let f = node.frame {
                 let cx = Int(round(f.x + f.width / 2))
                 let cy = Int(round(f.y + f.height / 2))
-                parts.append("@ (\(cx), \(cy))")
+                let hw = Int(round(f.width / 2))
+                let hh = Int(round(f.height / 2))
+                parts.append("(\(cx)±\(hw), \(cy)±\(hh))")
             }
 
             // value="..."
