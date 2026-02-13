@@ -4,25 +4,41 @@ import SimulatorKit
 
 // MARK: - Async timeout utility
 
-/// Races an operation against a deadline. If the operation doesn't complete within
-/// `timeout`, throws TimeoutError. The blocked operation continues in the background
-/// (ObjC synchronous calls can't be force-cancelled), but the caller gets unblocked.
+/// Races a synchronous operation against a GCD timer. Uses DispatchQueue (not the
+/// Swift cooperative thread pool) so the timeout fires even when the operation blocks
+/// a thread on a synchronous ObjC call that can't be cancelled.
 func withTimeout<T: Sendable>(
     _ timeout: Duration,
-    _ operation: @escaping @Sendable () async throws -> T
+    _ operation: @escaping @Sendable () throws -> T
 ) async throws -> T {
     let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
-    return try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
-        group.addTask {
-            try await Task.sleep(for: timeout)
-            throw TimeoutError.accessibilityTimedOut(timeoutSeconds: seconds)
+    return try await withCheckedThrowingContinuation { continuation in
+        // Serializes exactly-once resumption of the continuation.
+        // NSLock + Bool is safe across GCD queues; nonisolated(unsafe) silences
+        // the Sendable diagnostic since we guarantee thread-safety via the lock.
+        let lock = NSLock()
+        nonisolated(unsafe) var resumed = false
+
+        let resume: @Sendable (Result<T, Error>) -> Void = { result in
+            lock.lock()
+            guard !resumed else { lock.unlock(); return }
+            resumed = true
+            lock.unlock()
+            continuation.resume(with: result)
         }
-        defer { group.cancelAll() }
-        guard let result = try await group.next() else {
-            throw CancellationError()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let result = try operation()
+                resume(.success(result))
+            } catch {
+                resume(.failure(error))
+            }
         }
-        return result
+
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
+            resume(.failure(TimeoutError.accessibilityTimedOut(timeoutSeconds: seconds)))
+        }
     }
 }
 
