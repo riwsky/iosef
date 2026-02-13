@@ -95,7 +95,26 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         }
 
         var elementCount = 0
-        let result = [try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)]
+        var result = [try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)]
+
+        // Fallback: if the root element has no children (common on watchOS where
+        // accessibilityChildren returns empty), discover elements via grid hit-testing.
+        if result.count == 1, result[0].children.isEmpty, let rootFrame = result[0].frame,
+           rootFrame.width > 0, rootFrame.height > 0 {
+            let discovered = gridScanChildren(
+                rootFrame: CGRect(x: rootFrame.x, y: rootFrame.y, width: rootFrame.width, height: rootFrame.height),
+                token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount
+            )
+            if !discovered.isEmpty {
+                let root = result[0]
+                result = [TreeNode(
+                    role: root.role, label: root.label, title: root.title, value: root.value,
+                    identifier: root.identifier, hint: root.hint, traits: root.traits,
+                    frame: root.frame, children: discovered
+                )]
+            }
+        }
+
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
         if verboseLogging {
@@ -352,6 +371,81 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             frame: frameInfo,
             children: childNodes
         )
+    }
+
+    /// Grid-scan fallback: when accessibilityChildren returns empty (watchOS),
+    /// discover elements by hit-testing at regular intervals across the screen.
+    /// Deduplicates by frame to avoid returning the same element multiple times.
+    private func gridScanChildren(rootFrame: CGRect, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int) -> [TreeNode] {
+        let step: CGFloat = 10
+        var seen = Set<String>() // "x,y,w,h" frame keys for dedup
+        var elements: [TreeNode] = []
+
+        var probeY = rootFrame.origin.y + step / 2
+        while probeY < rootFrame.origin.y + rootFrame.height {
+            var probeX = rootFrame.origin.x + step / 2
+            while probeX < rootFrame.origin.x + rootFrame.width {
+                if ContinuousClock.now >= deadline { return elements }
+
+                // Skip points already covered by a discovered element's frame
+                if elements.contains(where: { node in
+                    guard let f = node.frame else { return false }
+                    return Double(probeX) >= f.x && Double(probeX) <= f.x + f.width &&
+                           Double(probeY) >= f.y && Double(probeY) <= f.y + f.height
+                }) {
+                    probeX += step
+                    continue
+                }
+
+                guard let translation = performPointTranslation(
+                    point: CGPoint(x: probeX, y: probeY), token: token
+                ) else {
+                    probeX += step
+                    continue
+                }
+
+                (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+
+                guard let elem = macPlatformElement(from: translation) else {
+                    probeX += step
+                    continue
+                }
+
+                (elem as AnyObject).value(forKey: "translation").map {
+                    ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+                }
+
+                // Serialize without recursing into children (they're likely empty too)
+                guard let node = try? serializeElement(elem, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount) else {
+                    probeX += step
+                    continue
+                }
+
+                // Dedup by frame
+                let frameKey: String
+                if let f = node.frame {
+                    frameKey = "\(f.x),\(f.y),\(f.width),\(f.height)"
+                } else {
+                    frameKey = "nil-\(node.identifier ?? node.label ?? UUID().uuidString)"
+                }
+
+                if !seen.contains(frameKey) {
+                    seen.insert(frameKey)
+                    // Skip the root element itself (same frame as rootFrame)
+                    if node.role != "AXApplication" {
+                        elements.append(node)
+                    }
+                }
+
+                probeX += step
+            }
+            probeY += step
+        }
+
+        if verboseLogging {
+            FileHandle.standardError.write(Data("[ios-simulator-mcp] grid scan: \(elements.count) elements discovered via hit-testing\n".utf8))
+        }
+        return elements
     }
 
     private func stringProperty(_ obj: AnyObject, _ selector: String) -> String? {
