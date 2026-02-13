@@ -18,6 +18,8 @@ SWIFT_BIN_DEFAULT = ".build/release/ios-simulator-mcp"
 NODE_SERVER_DEFAULT = "node /Users/wcybriwsky/build/ios-simulator-mcp/build/index.js"
 IDB_DEFAULT = "/Users/wcybriwsky/.local/bin/idb"
 RESULTS_DIR = Path("/tmp/ios-sim-mcp-bench")
+BASELINE_WORKSPACE_DIR = Path("/tmp/ios-sim-mcp-bench-baseline")
+BASELINE_WORKSPACE_NAME = "bench-baseline"
 
 # MCP-level benchmark tools: (tool_name, extra_params_or_None)
 TOOLS: list[tuple[str, dict | None]] = [
@@ -28,28 +30,32 @@ TOOLS: list[tuple[str, dict | None]] = [
     ("ui_view", None),
 ]
 
-# CLI-level benchmark tools: (display_name, swift_cli_template, idb_template)
-# Templates use {udid} placeholder.
-CLI_TOOLS: list[tuple[str, str, str]] = [
+# CLI-level benchmark tools: (display_name, swift_cli_template, baseline_template, baseline_label)
+# Templates use {udid}, {swift_bin}, {idb} placeholders.
+CLI_TOOLS: list[tuple[str, str, str, str]] = [
     (
         "ui_describe_all",
         "{swift_bin} cli ui_describe_all udid={udid}",
         "{idb} ui describe-all --udid {udid} --json",
+        "idb",
     ),
     (
         "ui_describe_point",
         "{swift_bin} cli ui_describe_point x=200 y=400 udid={udid}",
         "{idb} ui describe-point --udid {udid} --json -- 200 400",
+        "idb",
     ),
     (
         "ui_tap",
         "{swift_bin} cli ui_tap x=200 y=400 udid={udid}",
         "{idb} ui tap --udid {udid} --json -- 200 400",
+        "idb",
     ),
     (
         "screenshot",
         "{swift_bin} cli ui_view udid={udid}",
-        "{idb} screenshot --udid {udid} /tmp/bench_ss.png",
+        "xcrun simctl io {udid} screenshot --type=png /tmp/bench_ss.png",
+        "simctl",
     ),
 ]
 
@@ -68,6 +74,81 @@ def error(msg: str) -> None:
 
 def run(cmd: str, timeout: float = 30) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+
+
+# --- jj baseline helpers ---
+
+
+def resolve_jj_revision(rev: str) -> tuple[str, str]:
+    """Resolve a jj revision specifier to (change_id, first_line_of_description).
+
+    Exits on failure.
+    """
+    r = run(f"jj log -r '{rev}' --no-graph -T 'change_id ++ \"\\n\" ++ description.first_line()'")
+    if r.returncode != 0:
+        error(f"Failed to resolve jj revision '{rev}': {r.stderr.strip()}")
+        sys.exit(1)
+    lines = r.stdout.strip().split("\n", 1)
+    change_id = lines[0].strip()
+    description = lines[1].strip() if len(lines) > 1 and lines[1].strip() else "(no description)"
+    return change_id, description
+
+
+def build_baseline(rev: str) -> tuple[Path, str]:
+    """Create a jj workspace at the given revision, build it, return (binary_path, display_label)."""
+    change_id, description = resolve_jj_revision(rev)
+    short_id = change_id[:8]
+    label = f"{short_id}: {description}" if description != "(no description)" else short_id
+
+    info(f"Building baseline from revision '{rev}' ({label})...")
+
+    # Warn if baseline is the same as current working copy
+    current = run("jj log -r @ --no-graph -T change_id")
+    if current.returncode == 0 and current.stdout.strip() == change_id:
+        warn(f"Revision '{rev}' resolves to the current working copy — self-comparison will be meaningless")
+
+    # Clean up any prior workspace
+    if BASELINE_WORKSPACE_DIR.exists():
+        shutil.rmtree(BASELINE_WORKSPACE_DIR)
+    run(f"jj workspace forget {BASELINE_WORKSPACE_NAME}")  # ignore errors
+
+    # Create workspace at the revision
+    r = run(f"jj workspace add {BASELINE_WORKSPACE_DIR} --name {BASELINE_WORKSPACE_NAME} -r '{rev}'")
+    if r.returncode != 0:
+        error(f"Failed to create jj workspace: {r.stderr.strip()}")
+        sys.exit(1)
+
+    # Build in the workspace (no capture so user sees progress)
+    info("Building baseline binary (swift build -c release)...")
+    r = subprocess.run(
+        ["swift", "build", "-c", "release"],
+        cwd=BASELINE_WORKSPACE_DIR,
+        timeout=300,
+    )
+    if r.returncode != 0:
+        error("Baseline build failed")
+        cleanup_baseline()
+        sys.exit(1)
+
+    binary = BASELINE_WORKSPACE_DIR / ".build" / "release" / "ios-simulator-mcp"
+    if not binary.exists():
+        error(f"Baseline binary not found at {binary}")
+        cleanup_baseline()
+        sys.exit(1)
+
+    info(f"Baseline built successfully: {binary}")
+    return binary, label
+
+
+def cleanup_baseline() -> None:
+    """Forget the baseline jj workspace and remove its directory."""
+    info("Cleaning up baseline workspace...")
+    run(f"jj workspace forget {BASELINE_WORKSPACE_NAME}")
+    if BASELINE_WORKSPACE_DIR.exists():
+        shutil.rmtree(BASELINE_WORKSPACE_DIR)
+
+
+# --- prerequisites ---
 
 
 def get_booted_udid() -> str | None:
@@ -100,6 +181,9 @@ def check_prerequisites(mode: str) -> None:
         sys.exit(1)
 
 
+# --- smoke tests ---
+
+
 def smoke_test(label: str, server_cmd: str) -> None:
     info(f"Smoke testing {label} server...")
     try:
@@ -110,51 +194,6 @@ def smoke_test(label: str, server_cmd: str) -> None:
     except subprocess.TimeoutExpired:
         error(f"{label} smoke test timed out after 5s")
         sys.exit(1)
-
-
-def mcp_call_cmd(tool: str, params: dict | None, udid: str, server_cmd: str) -> str:
-    """Build the mcp call command string, injecting udid into params."""
-    if params is not None:
-        p = {**params, "udid": udid}
-    elif tool != "get_booted_sim_id":
-        p = {"udid": udid}
-    else:
-        p = None
-
-    # perl alarm gives us a 5s timeout on macOS (no coreutils `timeout`)
-    cmd = f"perl -e 'alarm 5; exec @ARGV' -- mcp call {tool}"
-    if p:
-        cmd += f" -p '{json.dumps(p)}'"
-    cmd += f" {server_cmd}"
-    return cmd
-
-
-def bench(
-    tool: str,
-    params: dict | None,
-    udid: str,
-    swift_cmd: str,
-    node_cmd: str,
-    warmup: int,
-    min_runs: int,
-) -> None:
-    info(f"Benchmarking: {tool}")
-
-    swift_full = mcp_call_cmd(tool, params, udid, swift_cmd)
-    node_full = mcp_call_cmd(tool, params, udid, node_cmd)
-
-    hyperfine_cmd = [
-        "hyperfine",
-        "--warmup", str(warmup),
-        "--min-runs", str(min_runs),
-        "--command-name", f"swift: {tool}", swift_full,
-        "--command-name", f"node: {tool}", node_full,
-        "--export-json", str(RESULTS_DIR / f"{tool}.json"),
-        "--export-markdown", str(RESULTS_DIR / f"{tool}.md"),
-    ]
-
-    subprocess.run(hyperfine_cmd, check=True)
-    click.echo()
 
 
 def idb_connect(idb: str, udid: str) -> None:
@@ -192,25 +231,112 @@ def cli_smoke_test(swift_bin: str, idb: str, udid: str) -> None:
     info("CLI smoke tests passed")
 
 
-def cli_bench(
-    name: str,
+# --- MCP command builder ---
+
+
+def mcp_call_cmd(tool: str, params: dict | None, udid: str, server_cmd: str) -> str:
+    """Build the mcp call command string, injecting udid into params."""
+    if params is not None:
+        p = {**params, "udid": udid}
+    elif tool != "get_booted_sim_id":
+        p = {"udid": udid}
+    else:
+        p = None
+
+    # perl alarm gives us a 5s timeout on macOS (no coreutils `timeout`)
+    cmd = f"perl -e 'alarm 5; exec @ARGV' -- mcp call {tool}"
+    if p:
+        cmd += f" -p '{json.dumps(p)}'"
+    cmd += f" {server_cmd}"
+    return cmd
+
+
+# --- benchmarking ---
+
+
+def bench(
+    tool: str,
+    params: dict | None,
+    udid: str,
     swift_cmd: str,
-    idb_cmd: str,
+    node_cmd: str,
     warmup: int,
     min_runs: int,
+    *,
+    baseline_swift_cmd: str | None = None,
+    baseline_label: str | None = None,
 ) -> None:
-    info(f"Benchmarking (CLI): {name}")
+    info(f"Benchmarking: {tool}")
 
-    # Wrap both in perl alarm timeout
-    swift_full = f"perl -e 'alarm 5; exec @ARGV' -- {swift_cmd}"
-    idb_full = f"perl -e 'alarm 5; exec @ARGV' -- {idb_cmd}"
+    swift_full = mcp_call_cmd(tool, params, udid, swift_cmd)
+    node_full = mcp_call_cmd(tool, params, udid, node_cmd)
+
+    current_name = "swift (current)" if baseline_swift_cmd else "swift"
 
     hyperfine_cmd = [
         "hyperfine",
         "--warmup", str(warmup),
         "--min-runs", str(min_runs),
-        "--command-name", f"swift-cli: {name}", swift_full,
-        "--command-name", f"idb: {name}", idb_full,
+        "--command-name", f"{current_name}: {tool}", swift_full,
+    ]
+
+    if baseline_swift_cmd:
+        baseline_full = mcp_call_cmd(tool, params, udid, baseline_swift_cmd)
+        hyperfine_cmd += [
+            "--command-name", f"swift ({baseline_label}): {tool}", baseline_full,
+        ]
+
+    hyperfine_cmd += [
+        "--command-name", f"node: {tool}", node_full,
+        "--export-json", str(RESULTS_DIR / f"{tool}.json"),
+        "--export-markdown", str(RESULTS_DIR / f"{tool}.md"),
+    ]
+
+    subprocess.run(hyperfine_cmd, check=True)
+    click.echo()
+
+
+def cli_bench(
+    name: str,
+    swift_cmd: str,
+    baseline_cmd: str,
+    baseline_label: str,
+    warmup: int,
+    min_runs: int,
+    *,
+    self_baseline_cmd: str | None = None,
+    self_baseline_label: str | None = None,
+) -> None:
+    info(f"Benchmarking (CLI): {name}")
+
+    # Wrap commands in perl alarm timeout
+    swift_full = f"perl -e 'alarm 5; exec @ARGV' -- {swift_cmd}"
+    baseline_full = f"perl -e 'alarm 5; exec @ARGV' -- {baseline_cmd}"
+
+    # Pre-check if external baseline command works; if not, skip it
+    baseline_ok = subprocess.run(baseline_cmd, shell=True, capture_output=True, timeout=10).returncode == 0
+
+    current_name = "swift-cli (current)" if self_baseline_cmd else "swift-cli"
+
+    hyperfine_cmd = [
+        "hyperfine",
+        "--warmup", str(warmup),
+        "--min-runs", str(min_runs),
+        "--command-name", f"{current_name}: {name}", swift_full,
+    ]
+
+    if self_baseline_cmd:
+        self_baseline_full = f"perl -e 'alarm 5; exec @ARGV' -- {self_baseline_cmd}"
+        hyperfine_cmd += [
+            "--command-name", f"swift-cli ({self_baseline_label}): {name}", self_baseline_full,
+        ]
+
+    if baseline_ok:
+        hyperfine_cmd += ["--command-name", f"{baseline_label}: {name}", baseline_full]
+    else:
+        warn(f"{baseline_label} command failed for '{name}', benchmarking without external baseline")
+
+    hyperfine_cmd += [
         "--export-json", str(RESULTS_DIR / f"cli_{name}.json"),
         "--export-markdown", str(RESULTS_DIR / f"cli_{name}.md"),
     ]
@@ -219,19 +345,40 @@ def cli_bench(
     click.echo()
 
 
-def _speedup_table(json_files: list[Path], label_a: str, label_b: str) -> list[str]:
-    """Build a markdown speedup summary table from hyperfine JSON files."""
+# --- summary ---
+
+
+def _speedup_table(json_files: list[Path], labels: list[str]) -> list[str]:
+    """Build a markdown speedup summary table from hyperfine JSON files.
+
+    labels[0] is the primary (current) command; subsequent labels are each
+    compared against it as speedup = other_mean / current_mean.
+    """
+    n_labels = len(labels)
     lines = []
-    lines.append(f"| Tool | {label_a} (mean) | {label_b} (mean) | Speedup |")
-    lines.append("|------|-------------|------------|---------|")
+
+    # Header: Tool | primary (mean) | [comparison (mean) | Speedup] ...
+    header_parts = ["Tool", f"{labels[0]} (mean)"]
+    for label in labels[1:]:
+        header_parts += [f"{label} (mean)", "Speedup"]
+    lines.append("| " + " | ".join(header_parts) + " |")
+    lines.append("|" + "|".join("------" for _ in header_parts) + "|")
+
     for jf in json_files:
         tool = jf.stem.removeprefix("cli_")
         data = json.loads(jf.read_text())
         results = data["results"]
-        a_mean = results[0]["mean"]
-        b_mean = results[1]["mean"]
-        speedup = b_mean / a_mean
-        lines.append(f"| {tool} | {a_mean:.3f}s | {b_mean:.3f}s | {speedup:.2f}x |")
+
+        row = [tool, f"{results[0]['mean']:.3f}s"]
+        for i in range(1, n_labels):
+            if i < len(results):
+                b_mean = results[i]["mean"]
+                speedup = b_mean / results[0]["mean"]
+                row += [f"{b_mean:.3f}s", f"{speedup:.2f}x"]
+            else:
+                row += ["N/A", "N/A"]
+        lines.append("| " + " | ".join(row) + " |")
+
     lines.append("")
     return lines
 
@@ -243,6 +390,7 @@ def generate_summary(
     idb_cmd: str | None,
     warmup: int,
     min_runs: int,
+    baseline_label: str | None = None,
 ) -> str:
     lines = [
         "# iOS Simulator MCP Benchmark",
@@ -256,13 +404,19 @@ def generate_summary(
         lines.append(f"- Node: `{node_cmd}`")
     if idb_cmd:
         lines.append(f"- idb: `{idb_cmd}`")
+    if baseline_label:
+        lines.append(f"- Self-comparison baseline: `{baseline_label}`")
     lines += [f"- Warmup runs: {warmup} | Min runs: {min_runs}", ""]
 
     # MCP results (files without cli_ prefix)
     mcp_mds = sorted(f for f in RESULTS_DIR.glob("*.md") if not f.name.startswith("cli_") and f.name != "summary.md")
     mcp_jsons = sorted(f for f in RESULTS_DIR.glob("*.json") if not f.name.startswith("cli_"))
     if mcp_mds:
-        lines.append("# MCP Benchmark (Swift MCP vs Node MCP)")
+        if baseline_label:
+            title = f"MCP Benchmark (Swift current vs {baseline_label} vs Node)"
+        else:
+            title = "MCP Benchmark (Swift MCP vs Node MCP)"
+        lines.append(f"# {title}")
         lines.append("")
         for md_file in mcp_mds:
             lines.append(f"## {md_file.stem}")
@@ -272,13 +426,21 @@ def generate_summary(
         if mcp_jsons:
             lines.append("## MCP Speedup Summary")
             lines.append("")
-            lines += _speedup_table(mcp_jsons, "Swift", "Node")
+            if baseline_label:
+                mcp_labels = ["Swift (current)", f"Swift ({baseline_label})", "Node"]
+            else:
+                mcp_labels = ["Swift", "Node"]
+            lines += _speedup_table(mcp_jsons, mcp_labels)
 
     # CLI results (files with cli_ prefix)
     cli_mds = sorted(f for f in RESULTS_DIR.glob("cli_*.md"))
     cli_jsons = sorted(f for f in RESULTS_DIR.glob("cli_*.json"))
     if cli_mds:
-        lines.append("# CLI Benchmark (Swift CLI vs idb)")
+        if baseline_label:
+            title = f"CLI Benchmark (Swift current vs {baseline_label} vs idb)"
+        else:
+            title = "CLI Benchmark (Swift CLI vs idb)"
+        lines.append(f"# {title}")
         lines.append("")
         for md_file in cli_mds:
             display = md_file.stem.removeprefix("cli_")
@@ -289,7 +451,11 @@ def generate_summary(
         if cli_jsons:
             lines.append("## CLI Speedup Summary")
             lines.append("")
-            lines += _speedup_table(cli_jsons, "Swift CLI", "idb")
+            if baseline_label:
+                cli_labels = ["Swift CLI (current)", f"Swift CLI ({baseline_label})", "idb"]
+            else:
+                cli_labels = ["Swift CLI", "idb"]
+            lines += _speedup_table(cli_jsons, cli_labels)
 
     return "\n".join(lines)
 
@@ -309,6 +475,20 @@ def generate_summary(
     show_default=True,
     help="Benchmark mode: mcp (Swift vs Node MCP), cli (Swift CLI vs idb), or all.",
 )
+@click.option(
+    "--from-version",
+    "from_version",
+    default="main",
+    show_default=True,
+    help="jj revision to use as self-comparison baseline.",
+)
+@click.option(
+    "--no-from-version",
+    "no_from_version",
+    is_flag=True,
+    default=False,
+    help="Disable self-comparison (only compare against external baselines).",
+)
 def main(
     swift_bin: str,
     node_server: str,
@@ -318,6 +498,8 @@ def main(
     tools: tuple[str, ...],
     udid: str | None,
     mode: str,
+    from_version: str,
+    no_from_version: bool,
 ) -> None:
     """Benchmark Swift MCP vs Node MCP and/or Swift CLI vs idb."""
     # cd to project root
@@ -340,73 +522,96 @@ def main(
         info("Building release binary...")
         subprocess.run(["swift", "build", "-c", "release"], check=True)
 
-    # MCP-mode prerequisites
-    if mode in ("mcp", "all"):
-        node_index = node_server.split()[-1]
-        if not Path(node_index).exists():
-            error(f"Node server not found at {node_index}")
-            click.echo(f"  cd {Path(node_index).parent.parent} && npm run build")
-            sys.exit(1)
-        smoke_test("Swift", swift_bin)
-        smoke_test("Node", node_server)
-        info("Both MCP servers responding")
+    # Build self-comparison baseline if requested
+    do_baseline = not no_from_version
+    baseline_bin: Path | None = None
+    baseline_label: str | None = None
 
-    # CLI-mode prerequisites
-    if mode in ("cli", "all"):
-        if not Path(idb_path).exists():
-            error(f"idb not found at {idb_path}")
-            click.echo("  Install with: brew install idb-companion")
-            sys.exit(1)
-        idb_connect(idb_path, udid)
-        cli_smoke_test(swift_bin, idb_path, udid)
+    try:
+        if do_baseline:
+            baseline_bin, baseline_label = build_baseline(from_version)
 
-    # Setup results dir
-    if RESULTS_DIR.exists():
-        shutil.rmtree(RESULTS_DIR)
-    RESULTS_DIR.mkdir(parents=True)
-
-    # --- MCP benchmarks ---
-    if mode in ("mcp", "all"):
-        bench_tools = TOOLS
-        if tools:
-            tool_set = set(tools)
-            bench_tools = [(t, p) for t, p in TOOLS if t in tool_set]
-            if not bench_tools:
-                error(f"No matching MCP tools. Available: {', '.join(t for t, _ in TOOLS)}")
+        # MCP-mode prerequisites
+        if mode in ("mcp", "all"):
+            node_index = node_server.split()[-1]
+            if not Path(node_index).exists():
+                error(f"Node server not found at {node_index}")
+                click.echo(f"  cd {Path(node_index).parent.parent} && npm run build")
                 sys.exit(1)
-        for tool, params in bench_tools:
-            bench(tool, params, udid, swift_bin, node_server, warmup, min_runs)
+            smoke_test("Swift", swift_bin)
+            smoke_test("Node", node_server)
+            info("Both MCP servers responding")
 
-    # --- CLI benchmarks ---
-    if mode in ("cli", "all"):
-        cli_tools = CLI_TOOLS
-        if tools:
-            tool_set = set(tools)
-            cli_tools = [(n, s, i) for n, s, i in CLI_TOOLS if n in tool_set]
-            if not cli_tools:
-                error(f"No matching CLI tools. Available: {', '.join(n for n, _, _ in CLI_TOOLS)}")
+        # CLI-mode prerequisites
+        if mode in ("cli", "all"):
+            if not Path(idb_path).exists():
+                error(f"idb not found at {idb_path}")
+                click.echo("  Install with: brew install idb-companion")
                 sys.exit(1)
-        for name, swift_tpl, idb_tpl in cli_tools:
-            swift_full = swift_tpl.format(swift_bin=swift_bin, udid=udid)
-            idb_full = idb_tpl.format(idb=idb_path, udid=udid)
-            cli_bench(name, swift_full, idb_full, warmup, min_runs)
+            idb_connect(idb_path, udid)
+            cli_smoke_test(swift_bin, idb_path, udid)
 
-    # Summary
-    summary = generate_summary(
-        mode=mode,
-        swift_cmd=swift_bin,
-        node_cmd=node_server if mode in ("mcp", "all") else None,
-        idb_cmd=idb_path if mode in ("cli", "all") else None,
-        warmup=warmup,
-        min_runs=min_runs,
-    )
-    summary_path = RESULTS_DIR / "summary.md"
-    summary_path.write_text(summary)
+        # Setup results dir
+        if RESULTS_DIR.exists():
+            shutil.rmtree(RESULTS_DIR)
+        RESULTS_DIR.mkdir(parents=True)
 
-    info(f"Results saved to {RESULTS_DIR}/")
-    info(f"Summary written to {summary_path}")
-    click.echo()
-    # click.echo(summary)
+        # --- MCP benchmarks ---
+        if mode in ("mcp", "all"):
+            bench_tools = TOOLS
+            if tools:
+                tool_set = set(tools)
+                bench_tools = [(t, p) for t, p in TOOLS if t in tool_set]
+                if not bench_tools:
+                    error(f"No matching MCP tools. Available: {', '.join(t for t, _ in TOOLS)}")
+                    sys.exit(1)
+            for tool, params in bench_tools:
+                bench(
+                    tool, params, udid, swift_bin, node_server, warmup, min_runs,
+                    baseline_swift_cmd=str(baseline_bin) if baseline_bin else None,
+                    baseline_label=baseline_label,
+                )
+
+        # --- CLI benchmarks ---
+        if mode in ("cli", "all"):
+            cli_tools = CLI_TOOLS
+            if tools:
+                tool_set = set(tools)
+                cli_tools = [(n, s, b, l) for n, s, b, l in CLI_TOOLS if n in tool_set]
+                if not cli_tools:
+                    error(f"No matching CLI tools. Available: {', '.join(n for n, _, _, _ in CLI_TOOLS)}")
+                    sys.exit(1)
+            for name, swift_tpl, baseline_tpl, ext_baseline_label in cli_tools:
+                swift_full = swift_tpl.format(swift_bin=swift_bin, udid=udid)
+                baseline_full = baseline_tpl.format(idb=idb_path, udid=udid)
+                self_cmd = None
+                if baseline_bin:
+                    self_cmd = swift_tpl.format(swift_bin=str(baseline_bin), udid=udid)
+                cli_bench(
+                    name, swift_full, baseline_full, ext_baseline_label, warmup, min_runs,
+                    self_baseline_cmd=self_cmd,
+                    self_baseline_label=baseline_label,
+                )
+
+        # Summary
+        summary = generate_summary(
+            mode=mode,
+            swift_cmd=swift_bin,
+            node_cmd=node_server if mode in ("mcp", "all") else None,
+            idb_cmd=idb_path if mode in ("cli", "all") else None,
+            warmup=warmup,
+            min_runs=min_runs,
+            baseline_label=baseline_label,
+        )
+        summary_path = RESULTS_DIR / "summary.md"
+        summary_path.write_text(summary)
+
+        info(f"Results saved to {RESULTS_DIR}/")
+        info(f"Summary written to {summary_path}")
+        click.echo()
+    finally:
+        if do_baseline:
+            cleanup_baseline()
 
 
 if __name__ == "__main__":
