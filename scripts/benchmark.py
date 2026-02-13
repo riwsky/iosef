@@ -35,25 +35,25 @@ TOOLS: list[tuple[str, dict | None]] = [
 CLI_TOOLS: list[tuple[str, str, str, str]] = [
     (
         "ui_describe_all",
-        "{swift_bin} ui_describe_all udid={udid}",
+        "{swift_bin} ui_describe_all --udid {udid}",
         "{idb} ui describe-all --udid {udid} --json",
         "idb",
     ),
     (
         "ui_describe_point",
-        "{swift_bin} ui_describe_point x=200 y=400 udid={udid}",
+        "{swift_bin} ui_describe_point --x 200 --y 400 --udid {udid}",
         "{idb} ui describe-point --udid {udid} --json -- 200 400",
         "idb",
     ),
     (
         "ui_tap",
-        "{swift_bin} ui_tap x=200 y=400 udid={udid}",
+        "{swift_bin} ui_tap --x 200 --y 400 --udid {udid}",
         "{idb} ui tap --udid {udid} --json -- 200 400",
         "idb",
     ),
     (
         "screenshot",
-        "{swift_bin} ui_view udid={udid}",
+        "{swift_bin} ui_view --udid {udid}",
         "xcrun simctl io {udid} screenshot --type=png /tmp/bench_ss.png",
         "simctl",
     ),
@@ -213,7 +213,7 @@ def cli_smoke_test(swift_bin: str, idb: str, udid: str) -> None:
     """Quick smoke test for both Swift CLI and idb."""
     info("Smoke testing Swift CLI...")
     try:
-        r = run(f"{swift_bin} ui_tap x=0 y=0 udid={udid}", timeout=10)
+        r = run(f"{swift_bin} ui_tap --x 0 --y 0 --udid {udid}", timeout=10)
         if r.returncode != 0:
             error(f"Swift CLI smoke test failed: {r.stderr.strip()}")
             sys.exit(1)
