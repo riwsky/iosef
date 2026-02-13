@@ -94,7 +94,7 @@ def resolve_jj_revision(rev: str) -> tuple[str, str]:
     return change_id, description
 
 
-def build_baseline(rev: str) -> tuple[Path, str]:
+def build_baseline(rev: str, *, verbose: bool = False) -> tuple[Path, str]:
     """Create a jj workspace at the given revision, build it, return (binary_path, display_label)."""
     change_id, description = resolve_jj_revision(rev)
     short_id = change_id[:8]
@@ -118,15 +118,18 @@ def build_baseline(rev: str) -> tuple[Path, str]:
         error(f"Failed to create jj workspace: {r.stderr.strip()}")
         sys.exit(1)
 
-    # Build in the workspace (no capture so user sees progress)
+    # Build in the workspace
     info("Building baseline binary (swift build -c release)...")
     r = subprocess.run(
         ["swift", "build", "-c", "release"],
         cwd=BASELINE_WORKSPACE_DIR,
         timeout=300,
+        **({"capture_output": True, "text": True} if not verbose else {}),
     )
     if r.returncode != 0:
         error("Baseline build failed")
+        if not verbose and r.stderr:
+            click.echo(r.stderr)
         cleanup_baseline()
         sys.exit(1)
 
@@ -489,6 +492,7 @@ def generate_summary(
     default=False,
     help="Disable self-comparison (only compare against external baselines).",
 )
+@click.option("-v", "--verbose", is_flag=True, default=False, help="Show swift build output.")
 def main(
     swift_bin: str,
     node_server: str,
@@ -500,6 +504,7 @@ def main(
     mode: str,
     from_version: str,
     no_from_version: bool,
+    verbose: bool,
 ) -> None:
     """Benchmark Swift MCP vs Node MCP and/or Swift CLI vs idb."""
     # cd to project root
@@ -520,7 +525,15 @@ def main(
     if not Path(swift_bin).exists():
         warn(f"Swift binary not found at {swift_bin}")
         info("Building release binary...")
-        subprocess.run(["swift", "build", "-c", "release"], check=True)
+        r = subprocess.run(
+            ["swift", "build", "-c", "release"],
+            **({"capture_output": True, "text": True} if not verbose else {}),
+        )
+        if r.returncode != 0:
+            error("Build failed")
+            if not verbose and r.stderr:
+                click.echo(r.stderr)
+            sys.exit(1)
 
     # Build self-comparison baseline if requested
     do_baseline = not no_from_version
@@ -529,7 +542,7 @@ def main(
 
     try:
         if do_baseline:
-            baseline_bin, baseline_label = build_baseline(from_version)
+            baseline_bin, baseline_label = build_baseline(from_version, verbose=verbose)
 
         # MCP-mode prerequisites
         if mode in ("mcp", "all"):
