@@ -548,7 +548,8 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         return emptyResult
     }
 
-    /// Sends an IndigoMessage to the HID client.
+    /// Sends an IndigoMessage to the HID client, waiting for delivery confirmation.
+    /// Matches idb's behavior of waiting for the completion callback before returning.
     public func sendMessage(_ data: Data, to client: AnyObject) {
         let size = data.count
         let buffer = malloc(size)!
@@ -565,9 +566,16 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
         // -(void)sendWithMessage:(void*)msg freeWhenDone:(BOOL)free
         //        completionQueue:(dispatch_queue_t)queue completion:(void(^)(NSError*))completion
-        typealias SendFn = @convention(c) (AnyObject, Selector, UnsafeMutableRawPointer, ObjCBool, DispatchQueue, Any?) -> Void
-        let send = unsafeBitCast(imp, to: SendFn.self)
+        let semaphore = DispatchSemaphore(value: 0)
         let queue = DispatchQueue.global(qos: .userInteractive)
-        send(client, sel, buffer, ObjCBool(true), queue, nil)
+
+        typealias CompletionBlock = @convention(block) (NSError?) -> Void
+        let completion: CompletionBlock = { _ in semaphore.signal() }
+
+        typealias SendFn = @convention(c) (AnyObject, Selector, UnsafeMutableRawPointer, ObjCBool, DispatchQueue, CompletionBlock?) -> Void
+        let send = unsafeBitCast(imp, to: SendFn.self)
+        send(client, sel, buffer, ObjCBool(true), queue, completion)
+
+        _ = semaphore.wait(timeout: .now() + 5.0)
     }
 }
