@@ -51,6 +51,17 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         (translator as AnyObject).setValue(del, forKey: "bridgeTokenDelegate")
     }
 
+    deinit {
+        // Unset bridgeTokenDelegate so the AXPTranslator singleton doesn't
+        // retain a stale reference to our dispatcher (and through it, the
+        // SimDevice). Without this, each process-lifetime bridge leaks its
+        // dispatcher + device XPC connection even after the bridge is released.
+        (translator as AnyObject).setValue(nil, forKey: "bridgeTokenDelegate")
+        if verboseLogging {
+            FileHandle.standardError.write(Data("[AXPAccessibilityBridge] deinit — unset bridgeTokenDelegate\n".utf8))
+        }
+    }
+
     // MARK: - Public API
 
     /// Returns the full accessibility tree from the frontmost application as an array of TreeNodes.
@@ -352,11 +363,14 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         if let children = (element as AnyObject).value(forKey: "accessibilityChildren") as? [AnyObject], !children.isEmpty {
             for child in children {
                 try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
-                // Set bridgeDelegateToken on each child's translation
-                if let translation = (child as AnyObject).value(forKey: "translation") as AnyObject? {
-                    translation.setValue(token, forKey: "bridgeDelegateToken")
+                let node: TreeNode = try autoreleasepool {
+                    // Set bridgeDelegateToken on each child's translation
+                    if let translation = (child as AnyObject).value(forKey: "translation") as AnyObject? {
+                        translation.setValue(token, forKey: "bridgeDelegateToken")
+                    }
+                    return try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
                 }
-                childNodes.append(try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount))
+                childNodes.append(node)
             }
         }
 
@@ -397,43 +411,42 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
                     continue
                 }
 
-                guard let translation = performPointTranslation(
-                    point: CGPoint(x: probeX, y: probeY), token: token
-                ) else {
-                    probeX += step
-                    continue
-                }
+                autoreleasepool {
+                    guard let translation = performPointTranslation(
+                        point: CGPoint(x: probeX, y: probeY), token: token
+                    ) else {
+                        return
+                    }
 
-                (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+                    (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
 
-                guard let elem = macPlatformElement(from: translation) else {
-                    probeX += step
-                    continue
-                }
+                    guard let elem = macPlatformElement(from: translation) else {
+                        return
+                    }
 
-                (elem as AnyObject).value(forKey: "translation").map {
-                    ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
-                }
+                    (elem as AnyObject).value(forKey: "translation").map {
+                        ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+                    }
 
-                // Serialize without recursing into children (they're likely empty too)
-                guard let node = try? serializeElement(elem, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount) else {
-                    probeX += step
-                    continue
-                }
+                    // Serialize without recursing into children (they're likely empty too)
+                    guard let node = try? serializeElement(elem, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount) else {
+                        return
+                    }
 
-                // Dedup by frame
-                let frameKey: String
-                if let f = node.frame {
-                    frameKey = "\(f.x),\(f.y),\(f.width),\(f.height)"
-                } else {
-                    frameKey = "nil-\(node.identifier ?? node.label ?? UUID().uuidString)"
-                }
+                    // Dedup by frame
+                    let frameKey: String
+                    if let f = node.frame {
+                        frameKey = "\(f.x),\(f.y),\(f.width),\(f.height)"
+                    } else {
+                        frameKey = "nil-\(node.identifier ?? node.label ?? UUID().uuidString)"
+                    }
 
-                if !seen.contains(frameKey) {
-                    seen.insert(frameKey)
-                    // Skip the root element itself (same frame as rootFrame)
-                    if node.role != "AXApplication" {
-                        elements.append(node)
+                    if !seen.contains(frameKey) {
+                        seen.insert(frameKey)
+                        // Skip the root element itself (same frame as rootFrame)
+                        if node.role != "AXApplication" {
+                            elements.append(node)
+                        }
                     }
                 }
 

@@ -21,6 +21,17 @@ public final class IndigoHIDClient: @unchecked Sendable {
         self.screenScale = bridge.screenScale(forDevice: device)
     }
 
+    deinit {
+        // When the cache releases this client, ARC drops the strong refs to
+        // `client` (SimDeviceLegacyHIDClient) and `device` (SimDevice),
+        // triggering their ObjC dealloc which closes Mach ports and XPC
+        // connections. Without explicit cache cleanup, these stay alive for
+        // the process lifetime and accumulate across restarts.
+        if verboseLogging {
+            FileHandle.standardError.write(Data("[IndigoHIDClient] deinit — releasing HID client\n".utf8))
+        }
+    }
+
     // MARK: - Public API
 
     /// Sends a tap at the given iOS point coordinates.
@@ -68,12 +79,14 @@ public final class IndigoHIDClient: @unchecked Sendable {
         let dyRatio = (endRatio.yRatio - startRatio.yRatio) / Double(stepCount)
 
         for i in 1...stepCount {
-            let xr = startRatio.xRatio + dxRatio * Double(i)
-            let yr = startRatio.yRatio + dyRatio * Double(i)
-            // Drag events use "down" direction (finger still touching)
-            let dragData = buildTouchMessage(xRatio: xr, yRatio: yr, direction: IndigoDirection.down)
-            bridge.sendMessage(dragData, to: client)
-            usleep(stepDelayMicros)
+            autoreleasepool {
+                let xr = startRatio.xRatio + dxRatio * Double(i)
+                let yr = startRatio.yRatio + dyRatio * Double(i)
+                // Drag events use "down" direction (finger still touching)
+                let dragData = buildTouchMessage(xRatio: xr, yRatio: yr, direction: IndigoDirection.down)
+                bridge.sendMessage(dragData, to: client)
+                usleep(stepDelayMicros)
+            }
         }
 
         // Touch up at end
@@ -96,18 +109,20 @@ public final class IndigoHIDClient: @unchecked Sendable {
     /// Types a string by sending per-character HID keyboard events.
     public func typeText(_ text: String) {
         for char in text {
-            guard let (keyCode, needsShift) = Self.hidKeyCode(for: char) else { continue }
+            autoreleasepool {
+                guard let (keyCode, needsShift) = Self.hidKeyCode(for: char) else { return }
 
-            if needsShift {
-                sendKeyEvent(keyCode: 0xE1, direction: IndigoDirection.down)  // Left Shift down
-            }
-            sendKeyEvent(keyCode: keyCode, direction: IndigoDirection.down)
-            sendKeyEvent(keyCode: keyCode, direction: IndigoDirection.up)
-            if needsShift {
-                sendKeyEvent(keyCode: 0xE1, direction: IndigoDirection.up)    // Left Shift up
-            }
+                if needsShift {
+                    sendKeyEvent(keyCode: 0xE1, direction: IndigoDirection.down)  // Left Shift down
+                }
+                sendKeyEvent(keyCode: keyCode, direction: IndigoDirection.down)
+                sendKeyEvent(keyCode: keyCode, direction: IndigoDirection.up)
+                if needsShift {
+                    sendKeyEvent(keyCode: 0xE1, direction: IndigoDirection.up)    // Left Shift up
+                }
 
-            usleep(10_000)  // 10ms between characters
+                usleep(10_000)  // 10ms between characters
+            }
         }
     }
 

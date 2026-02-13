@@ -228,6 +228,15 @@ actor SimulatorCache {
         axpBridges.removeAll()
         hidClients.removeAll()
     }
+
+    /// Deterministic cleanup: release HID clients and AXP bridges in reverse
+    /// order of creation so that Mach ports and XPC connections are closed
+    /// before the process exits, rather than relying on OS reaping.
+    func shutdown() {
+        axpBridges.removeAll()
+        hidClients.removeAll()
+        deviceCache = nil
+    }
 }
 
 enum MCPToolError: Error, LocalizedError {
@@ -839,7 +848,28 @@ struct MCPServe: AsyncParsableCommand {
         let transport = StdioTransport()
         try await server.start(transport: transport)
 
-        try await Task.sleep(for: .seconds(365 * 24 * 3600))
+        // Wait for SIGINT/SIGTERM instead of sleeping forever.
+        // This lets us run deterministic cleanup before exit.
+        nonisolated(unsafe) var signalSources: [DispatchSourceSignal] = []
+        let sigStream = AsyncStream<Int32> { continuation in
+            for sig: Int32 in [SIGINT, SIGTERM] {
+                signal(sig, SIG_IGN)   // ignore default handler
+                let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+                source.setEventHandler { continuation.yield(sig) }
+                source.resume()
+                signalSources.append(source)
+            }
+            continuation.onTermination = { @Sendable _ in
+                for source in signalSources { source.cancel() }
+            }
+        }
+        for await sig in sigStream {
+            log("Received signal \(sig), shutting down...")
+            break
+        }
+
+        await SimulatorCache.shared.shutdown()
+        log("Cleanup complete, exiting.")
     }
 }
 
