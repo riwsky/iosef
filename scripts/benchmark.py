@@ -133,7 +133,7 @@ def build_baseline(rev: str, *, verbose: bool = False) -> tuple[Path, str]:
         cleanup_baseline()
         sys.exit(1)
 
-    binary = BASELINE_WORKSPACE_DIR / ".build" / "release" / "ios-simulator-mcp"
+    binary = BASELINE_WORKSPACE_DIR / ".build" / "release" / "ios_simulator_cli"
     if not binary.exists():
         error(f"Baseline binary not found at {binary}")
         cleanup_baseline()

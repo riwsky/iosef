@@ -118,7 +118,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
         if verboseLogging {
-            FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+            FileHandle.standardError.write(Data("[ios_simulator_cli] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
         }
 
         // Transform frames from macOS window coords to iOS points.
@@ -130,7 +130,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             let uniformScale = Double(iosPointSize.width) / rootFrame.width
             let yOffset = (Double(iosPointSize.height) - rootFrame.height * uniformScale) / 2
             if verboseLogging {
-                FileHandle.standardError.write(Data("[ios-simulator-mcp] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))\n".utf8))
+                FileHandle.standardError.write(Data("[ios_simulator_cli] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))\n".utf8))
             }
             return result.map { transformFrames($0, uniformScale: uniformScale, yOffset: yOffset, originX: rootFrame.x, originY: rootFrame.y) }
         }
@@ -177,7 +177,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
         if verboseLogging {
-            FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+            FileHandle.standardError.write(Data("[ios_simulator_cli] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
         }
 
         // Transform frames from macOS window coords to iOS points (uniform scale + centering)
@@ -443,7 +443,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         }
 
         if verboseLogging {
-            FileHandle.standardError.write(Data("[ios-simulator-mcp] grid scan: \(elements.count) elements discovered via hit-testing\n".utf8))
+            FileHandle.standardError.write(Data("[ios_simulator_cli] grid scan: \(elements.count) elements discovered via hit-testing\n".utf8))
         }
         return elements
     }
@@ -572,7 +572,7 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
             do {
                 return try self.bridge.sendAccessibilityRequest(request, toDevice: dev, timeoutSeconds: xpcTimeout)
             } catch {
-                FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC call failed: \(error.localizedDescription)\n".utf8))
+                FileHandle.standardError.write(Data("[ios_simulator_cli] XPC call failed: \(error.localizedDescription)\n".utf8))
                 return Self.emptyAXPResponse()
             }
         }
