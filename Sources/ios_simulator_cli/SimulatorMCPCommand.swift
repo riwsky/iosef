@@ -10,7 +10,7 @@ import SimulatorKit
 /// a thread on a synchronous ObjC call that can't be cancelled.
 func log(_ msg: String) {
     let ts = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
-    FileHandle.standardError.write(Data("[ios-simulator-mcp \(ts)] \(msg)\n".utf8))
+    FileHandle.standardError.write(Data("[ios_simulator_cli \(ts)] \(msg)\n".utf8))
 }
 
 func withTimeout<T: Sendable>(
@@ -56,7 +56,7 @@ func withTimeout<T: Sendable>(
 
 // MARK: - Configuration
 
-let serverVersion = "2.0.0"
+let serverVersion = "3.0.0"
 let filteredTools: Set<String> = {
     guard let env = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_FILTERED_TOOLS"] else {
         return []
@@ -240,7 +240,7 @@ enum MCPToolError: Error, LocalizedError {
     }
 }
 
-// MARK: - Tool definitions
+// MARK: - Tool definitions (for MCP server mode)
 
 func allTools() -> [Tool] {
     var tools: [Tool] = []
@@ -365,32 +365,18 @@ func allTools() -> [Tool] {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "udid": udidSchema,
-                ]),
-            ])
-        ))
-    }
-
-    if !isFiltered("screenshot") {
-        tools.append(Tool(
-            name: "screenshot",
-            description: "Takes a screenshot of the iOS Simulator and saves to a file",
-            inputSchema: .object([
-                "type": .string("object"),
-                "properties": .object([
                     "output_path": .object([
                         "type": .string("string"),
                         "maxLength": .int(1024),
-                        "description": .string("File path where the screenshot will be saved"),
+                        "description": .string("Optional file path to save screenshot to. If provided, saves to file instead of returning base64 image data."),
                     ]),
                     "type": .object([
                         "type": .string("string"),
                         "enum": .array([.string("png"), .string("tiff"), .string("bmp"), .string("gif"), .string("jpeg")]),
-                        "description": .string("Image format. Default is png."),
+                        "description": .string("Image format when saving to file. Default is png."),
                     ]),
                     "udid": udidSchema,
                 ]),
-                "required": .array([.string("output_path")]),
             ])
         ))
     }
@@ -440,7 +426,7 @@ func allTools() -> [Tool] {
     return tools
 }
 
-// MARK: - Tool call dispatch
+// MARK: - Tool call dispatch (used by both MCP server and CLI subcommands)
 
 func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
     do {
@@ -461,8 +447,6 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleUISwipe(params)
         case "ui_view":
             return try await handleUIView(params)
-        case "screenshot":
-            return try await handleScreenshot(params)
         case "install_app":
             return try await handleInstallApp(params)
         case "launch_app":
@@ -580,30 +564,22 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
 func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
-    // Get screen scale to downscale screenshot from device pixels to iOS points
-    let screenScale = try await SimulatorCache.shared.getScreenScale(udid: udid)
+    // If output_path is provided, save to file instead of returning base64
+    if let outputPath = params.arguments?["output_path"]?.stringValue {
+        let absolutePath = ensureAbsolutePath(outputPath)
+        let format = params.arguments?["type"]?.stringValue ?? "png"
+        try ScreenCapture.captureToFile(udid: udid, outputPath: absolutePath, format: format)
+        return .init(content: [.text("Screenshot saved to \(absolutePath)")])
+    }
 
+    // Default: return base64 image data
+    let screenScale = try await SimulatorCache.shared.getScreenScale(udid: udid)
     let capture = try ScreenCapture.captureSimulator(udid: udid, screenScale: screenScale)
 
     return .init(content: [
         .image(data: capture.base64, mimeType: "image/jpeg", metadata: nil),
         .text("Screenshot captured"),
     ])
-}
-
-func handleScreenshot(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-
-    guard let outputPath = params.arguments?["output_path"]?.stringValue else {
-        return .init(content: [.text("Missing required parameter: output_path")], isError: true)
-    }
-
-    let absolutePath = ensureAbsolutePath(outputPath)
-    let format = params.arguments?["type"]?.stringValue ?? "png"
-
-    try ScreenCapture.captureToFile(udid: udid, outputPath: absolutePath, format: format)
-
-    return .init(content: [.text("Screenshot saved to \(absolutePath)")])
 }
 
 func handleInstallApp(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -751,45 +727,115 @@ func parseKeyValueArgs(_ args: [String]) -> [String: Value] {
     return arguments
 }
 
-// MARK: - Tool schema helpers
+// MARK: - Shared CLI output helper
 
-func toolRequiredParams(_ tool: Tool) -> [String] {
-    guard case .object(let schema) = tool.inputSchema,
-          case .array(let required)? = schema["required"] else {
-        return []
-    }
-    return required.compactMap(\.stringValue)
-}
+/// Runs a tool via handleToolCall and formats the result for terminal output.
+/// Used by all CLI subcommands to avoid duplicating output logic.
+func runToolCLI(toolName: String, args: [String], json: Bool, output: String?) async throws {
+    setupGlobals()
 
-func toolProperties(_ tool: Tool) -> [(name: String, schema: [String: Value])] {
-    guard case .object(let schema) = tool.inputSchema,
-          case .object(let props)? = schema["properties"] else {
-        return []
+    let arguments = parseKeyValueArgs(args)
+
+    log("CLI: running tool '\(toolName)' with args: \(arguments)")
+    let params = CallTool.Parameters(name: toolName, arguments: arguments.isEmpty ? nil : arguments)
+    let result = await handleToolCall(params)
+
+    if json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(result)
+        print(String(data: data, encoding: .utf8)!)
+    } else {
+        for content in result.content {
+            switch content {
+            case .text(let text):
+                print(text)
+            case .image(let data, let mimeType, _):
+                if let outputPath = output {
+                    let path = ensureAbsolutePath(outputPath)
+                    guard let imageData = Data(base64Encoded: data) else {
+                        fputs("Error: failed to decode base64 image data\n", stderr)
+                        continue
+                    }
+                    try imageData.write(to: URL(fileURLWithPath: path))
+                    print("Image (\(mimeType)) saved to \(path)")
+                } else {
+                    // CLI mode: save to temp file instead of printing base64
+                    let timestamp = Int(Date().timeIntervalSince1970)
+                    let ext = mimeType.split(separator: "/").last.map(String.init) ?? "jpg"
+                    let tempPath = "/tmp/ios_sim_screenshot_\(timestamp).\(ext)"
+                    guard let imageData = Data(base64Encoded: data) else {
+                        fputs("Error: failed to decode base64 image data\n", stderr)
+                        continue
+                    }
+                    try imageData.write(to: URL(fileURLWithPath: tempPath))
+                    print(tempPath)
+                }
+            case .audio(let data, let mimeType):
+                if let outputPath = output {
+                    let path = ensureAbsolutePath(outputPath)
+                    guard let audioData = Data(base64Encoded: data) else {
+                        fputs("Error: failed to decode base64 audio data\n", stderr)
+                        continue
+                    }
+                    try audioData.write(to: URL(fileURLWithPath: path))
+                    print("Audio (\(mimeType)) saved to \(path)")
+                } else {
+                    print("Audio (\(mimeType), \(data.count) bytes base64). Use --output <path> to save.")
+                }
+            default:
+                print("<unknown content type>")
+            }
+        }
     }
-    return props.sorted(by: { $0.key < $1.key }).compactMap { key, value in
-        guard case .object(let propSchema) = value else { return nil }
-        return (name: key, schema: propSchema)
+
+    if result.isError == true {
+        fputs("Tool returned error\n", stderr)
+        throw ExitCode.failure
     }
+    log("CLI: done")
 }
 
 // MARK: - ArgumentParser commands
 
 @main
-struct SimulatorMCPCommand: AsyncParsableCommand {
+struct SimulatorCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ios-simulator-mcp",
-        abstract: "iOS Simulator MCP server and CLI tool",
+        commandName: "ios_simulator_cli",
+        abstract: "iOS Simulator CLI — interact with iOS Simulator via accessibility, HID input, and screenshots.",
+        discussion: """
+            Available commands let you tap, type, swipe, inspect accessibility elements, \
+            and capture screenshots. Coordinates are in iOS points. Run 'ui_describe_all' \
+            to discover element positions, 'ui_view' to see the screen. Also supports MCP \
+            server mode via the 'mcp' subcommand.
+            """,
         version: serverVersion,
-        subcommands: [Serve.self, CLI.self, Tools.self],
-        defaultSubcommand: Serve.self
+        subcommands: [
+            MCPServe.self,
+            GetBootedSimID.self,
+            OpenSimulator.self,
+            UIDescribeAll.self,
+            UIDescribePoint.self,
+            UITap.self,
+            UIType.self,
+            UISwipe.self,
+            UIView.self,
+            InstallApp.self,
+            LaunchApp.self,
+        ]
     )
 }
 
-// MARK: Serve (default — MCP server mode)
+// MARK: - mcp (MCP server mode)
 
-struct Serve: AsyncParsableCommand {
+struct MCPServe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Start the MCP server (default)"
+        commandName: "mcp",
+        abstract: "Start the MCP server (stdio transport).",
+        discussion: """
+            Starts a Model Context Protocol server on stdin/stdout. \
+            Use this when configuring the tool as an MCP server for AI agents.
+            """
     )
 
     func run() async throws {
@@ -816,176 +862,275 @@ struct Serve: AsyncParsableCommand {
     }
 }
 
-// MARK: CLI — direct tool invocation
+// MARK: - Tool subcommands
 
-struct CLI: AsyncParsableCommand {
+struct GetBootedSimID: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "cli",
-        abstract: "Run a tool directly, bypassing the MCP protocol",
+        commandName: "get_booted_sim_id",
+        abstract: "Get the UDID of the currently booted simulator.",
         discussion: """
+            Queries CoreSimulator for the booted device. Returns the device name and UUID. \
+            Useful for verifying which simulator is active before running other commands.
+
             Examples:
-              ios-simulator-mcp cli get_booted_sim_id
-              ios-simulator-mcp cli ui_tap x=200 y=400
-              ios-simulator-mcp cli ui_view --output /tmp/screen.jpg
-              ios-simulator-mcp cli ui_describe_all --json
+              ios_simulator_cli get_booted_sim_id
+              ios_simulator_cli get_booted_sim_id --json
             """
     )
 
     @Flag(name: .long, help: "Output results as JSON")
     var json: Bool = false
 
-    @Option(name: .long, help: "Save image output to this file path")
-    var output: String? = nil
-
-    @Argument(parsing: .allUnrecognized, help: "Tool name followed by key=value parameters")
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters")
     var toolArgs: [String] = []
 
     func run() async throws {
-        setupGlobals()
-
-        guard let toolName = toolArgs.first else {
-            throw ValidationError("Missing tool name. Run 'ios-simulator-mcp tools' to list available tools.")
-        }
-
-        let tools = allTools()
-        guard let tool = tools.first(where: { $0.name == toolName }) else {
-            let names = tools.map(\.name).joined(separator: ", ")
-            throw ValidationError("Unknown tool '\(toolName)'. Available: \(names)")
-        }
-
-        let kvArgs = Array(toolArgs.dropFirst())
-        let arguments = parseKeyValueArgs(kvArgs)
-
-        // Validate required params
-        let required = toolRequiredParams(tool)
-        let missing = required.filter { arguments[$0] == nil }
-        if !missing.isEmpty {
-            throw ValidationError("Missing required parameter\(missing.count > 1 ? "s" : ""): \(missing.joined(separator: ", ")). Run 'ios-simulator-mcp tools \(toolName)' for details.")
-        }
-
-        log("CLI: running tool '\(toolName)' with args: \(arguments)")
-        let params = CallTool.Parameters(name: toolName, arguments: arguments.isEmpty ? nil : arguments)
-        let result = await handleToolCall(params)
-
-        if json {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(result)
-            print(String(data: data, encoding: .utf8)!)
-        } else {
-            for content in result.content {
-                switch content {
-                case .text(let text):
-                    print(text)
-                case .image(let data, let mimeType, _):
-                    if let outputPath = output {
-                        let path = ensureAbsolutePath(outputPath)
-                        guard let imageData = Data(base64Encoded: data) else {
-                            fputs("Error: failed to decode base64 image data\n", stderr)
-                            continue
-                        }
-                        try imageData.write(to: URL(fileURLWithPath: path))
-                        print("Image (\(mimeType)) saved to \(path)")
-                    } else {
-                        print("Image (\(mimeType), \(data.count) bytes base64). Use --output <path> to save.")
-                    }
-                case .audio(let data, let mimeType):
-                    if let outputPath = output {
-                        let path = ensureAbsolutePath(outputPath)
-                        guard let audioData = Data(base64Encoded: data) else {
-                            fputs("Error: failed to decode base64 audio data\n", stderr)
-                            continue
-                        }
-                        try audioData.write(to: URL(fileURLWithPath: path))
-                        print("Audio (\(mimeType)) saved to \(path)")
-                    } else {
-                        print("Audio (\(mimeType), \(data.count) bytes base64). Use --output <path> to save.")
-                    }
-                default:
-                    print("<unknown content type>")
-                }
-            }
-        }
-
-        if result.isError == true {
-            fputs("Tool returned error\n", stderr)
-            throw ExitCode.failure
-        }
-        log("CLI: done")
+        try await runToolCLI(toolName: "get_booted_sim_id", args: toolArgs, json: json, output: nil)
     }
 }
 
-// MARK: Tools — list tools and show per-tool help
-
-struct Tools: AsyncParsableCommand {
+struct OpenSimulator: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "tools",
-        abstract: "List available tools or show details for a specific tool"
+        commandName: "open_simulator",
+        abstract: "Launch the Simulator.app.",
+        discussion: """
+            Opens the iOS Simulator application if it's not already running. \
+            Run this before other commands if the simulator isn't open.
+
+            Examples:
+              ios_simulator_cli open_simulator
+            """
     )
 
-    @Argument(help: "Tool name to show detailed help for")
-    var toolName: String? = nil
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
 
-    func run() throws {
-        let tools = allTools()
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters")
+    var toolArgs: [String] = []
 
-        if let name = toolName {
-            guard let tool = tools.first(where: { $0.name == name }) else {
-                let names = tools.map(\.name).joined(separator: ", ")
-                throw ValidationError("Unknown tool '\(name)'. Available: \(names)")
-            }
-            printToolDetail(tool)
-        } else {
-            printToolList(tools)
-        }
+    func run() async throws {
+        try await runToolCLI(toolName: "open_simulator", args: toolArgs, json: json, output: nil)
     }
+}
 
-    private func printToolList(_ tools: [Tool]) {
-        let maxName = tools.map(\.name.count).max() ?? 0
-        for tool in tools {
-            let pad = String(repeating: " ", count: maxName - tool.name.count)
-            print("  \(tool.name)\(pad)  \(tool.description ?? "")")
-        }
-        print()
-        print("Run 'ios-simulator-mcp tools <name>' for parameter details.")
+struct UIDescribeAll: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ui_describe_all",
+        abstract: "Dump the full accessibility tree as JSON.",
+        discussion: """
+            Returns a JSON tree of every accessibility element on screen, including \
+            labels, roles, frames, and values. Use this to discover element positions \
+            for ui_tap, or to understand the current UI state.
+
+            Coordinates in the output are in iOS points — the same coordinate system \
+            used by ui_tap, ui_swipe, and ui_describe_point.
+
+            Examples:
+              ios_simulator_cli ui_describe_all
+              ios_simulator_cli ui_describe_all udid=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (optional: udid)")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        try await runToolCLI(toolName: "ui_describe_all", args: toolArgs, json: json, output: nil)
     }
+}
 
-    private func printToolDetail(_ tool: Tool) {
-        print(tool.name)
-        if let desc = tool.description {
-            print("  \(desc)")
-        }
-        print()
+struct UIDescribePoint: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ui_describe_point",
+        abstract: "Get the accessibility element at (x, y).",
+        discussion: """
+            Returns the accessibility element at the given coordinates. Useful for \
+            identifying what's at a specific point on screen.
 
-        let props = toolProperties(tool)
-        let required = Set(toolRequiredParams(tool))
+            Coordinates are in iOS points (same system as ui_tap and ui_describe_all).
 
-        if props.isEmpty {
-            print("  No parameters.")
-            return
-        }
+            Examples:
+              ios_simulator_cli ui_describe_point x=200 y=400
+              ios_simulator_cli ui_describe_point x=100 y=300 --json
+            """
+    )
 
-        print("  Parameters:")
-        for prop in props {
-            let req = required.contains(prop.name) ? " (required)" : ""
-            let type = prop.schema["type"]?.stringValue ?? "any"
-            let desc = prop.schema["description"]?.stringValue ?? ""
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
 
-            print("    \(prop.name)  [\(type)]\(req)")
-            if !desc.isEmpty {
-                print("      \(desc)")
-            }
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: x, y; optional: udid)")
+    var toolArgs: [String] = []
 
-            if case .array(let enumValues)? = prop.schema["enum"] {
-                let vals = enumValues.compactMap(\.stringValue).joined(separator: ", ")
-                print("      values: \(vals)")
-            }
-            if let pattern = prop.schema["pattern"]?.stringValue {
-                print("      pattern: \(pattern)")
-            }
-            if let maxLen = prop.schema["maxLength"] {
-                print("      maxLength: \(maxLen)")
-            }
-        }
+    func run() async throws {
+        try await runToolCLI(toolName: "ui_describe_point", args: toolArgs, json: json, output: nil)
+    }
+}
+
+struct UITap: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ui_tap",
+        abstract: "Tap at (x, y) coordinates on the iOS Simulator screen.",
+        discussion: """
+            Sends a HID touch event directly to the simulator (no simctl overhead). \
+            Coordinates are in iOS points. Use ui_describe_all to find element positions.
+
+            For long-press, pass duration (in seconds).
+
+            Examples:
+              ios_simulator_cli ui_tap x=200 y=400
+              ios_simulator_cli ui_tap x=100 y=300 duration=0.5
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: x, y; optional: duration, udid)")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        try await runToolCLI(toolName: "ui_tap", args: toolArgs, json: json, output: nil)
+    }
+}
+
+struct UIType: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ui_type",
+        abstract: "Type text into the focused field.",
+        discussion: """
+            Sends keyboard HID events to type text into whatever field currently has \
+            focus in the simulator. Only printable ASCII characters (0x20-0x7E) are supported.
+
+            Tap a text field first with ui_tap to ensure it has focus.
+
+            Examples:
+              ios_simulator_cli ui_type text=hello
+              ios_simulator_cli ui_type "text=Hello World"
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: text; optional: udid)")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        try await runToolCLI(toolName: "ui_type", args: toolArgs, json: json, output: nil)
+    }
+}
+
+struct UISwipe: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ui_swipe",
+        abstract: "Swipe between two points on the simulator screen.",
+        discussion: """
+            Sends a multi-step HID touch drag from (x_start, y_start) to (x_end, y_end). \
+            Coordinates are in iOS points.
+
+            Use delta to control step granularity (smaller = more steps = smoother). \
+            Use duration to control speed (in seconds).
+
+            Examples:
+              ios_simulator_cli ui_swipe x_start=200 y_start=600 x_end=200 y_end=200
+              ios_simulator_cli ui_swipe x_start=200 y_start=600 x_end=200 y_end=200 duration=0.3
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: x_start, y_start, x_end, y_end; optional: delta, duration, udid)")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        try await runToolCLI(toolName: "ui_swipe", args: toolArgs, json: json, output: nil)
+    }
+}
+
+struct UIView: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ui_view",
+        abstract: "Capture a screenshot of the simulator screen.",
+        discussion: """
+            In CLI mode, saves the screenshot to a file and prints the path. \
+            Use --output to specify a path, otherwise a temp file is created.
+
+            In MCP mode, returns base64 image data unless output_path is provided.
+
+            The screenshot is coordinate-aligned with ui_tap and ui_describe_all — \
+            pixels correspond to iOS points.
+
+            Examples:
+              ios_simulator_cli ui_view
+              ios_simulator_cli ui_view --output /tmp/screen.jpg
+              ios_simulator_cli ui_view output_path=/tmp/screen.png type=png
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Option(name: .long, help: "Save screenshot to this file path")
+    var output: String? = nil
+
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (optional: output_path, type, udid)")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        try await runToolCLI(toolName: "ui_view", args: toolArgs, json: json, output: output)
+    }
+}
+
+struct InstallApp: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "install_app",
+        abstract: "Install a .app or .ipa bundle on the simulator.",
+        discussion: """
+            Installs an application bundle using CoreSimulator's private API \
+            (faster than simctl install). Supports .app directories and .ipa files.
+
+            Examples:
+              ios_simulator_cli install_app app_path=/path/to/MyApp.app
+              ios_simulator_cli install_app app_path=./build/MyApp.app
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: app_path; optional: udid)")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        try await runToolCLI(toolName: "install_app", args: toolArgs, json: json, output: nil)
+    }
+}
+
+struct LaunchApp: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "launch_app",
+        abstract: "Launch an app by bundle identifier.",
+        discussion: """
+            Launches an installed app on the simulator using CoreSimulator's private API. \
+            Optionally terminates the app first if it's already running.
+
+            Examples:
+              ios_simulator_cli launch_app bundle_id=com.apple.mobilesafari
+              ios_simulator_cli launch_app bundle_id=com.example.myapp terminate_running=true
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: bundle_id; optional: terminate_running, udid)")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        try await runToolCLI(toolName: "launch_app", args: toolArgs, json: json, output: nil)
     }
 }

@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "ios-simulator-mcp",
+    name: "ios_simulator_cli",
     platforms: [
         .macOS(.v13)
     ],
@@ -27,13 +27,13 @@ let package = Package(
             path: "Sources/SimulatorKit"
         ),
         .executableTarget(
-            name: "ios-simulator-mcp",
+            name: "ios_simulator_cli",
             dependencies: [
                 "SimulatorKit",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/SimulatorMCP"
+            path: "Sources/ios_simulator_cli"
         ),
         .testTarget(
             name: "SimulatorKitTests",

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import click
 
-SWIFT_BIN_DEFAULT = ".build/release/ios-simulator-mcp"
+SWIFT_BIN_DEFAULT = ".build/release/ios_simulator_cli"
 NODE_SERVER_DEFAULT = "node /Users/wcybriwsky/build/ios-simulator-mcp/build/index.js"
 IDB_DEFAULT = "/Users/wcybriwsky/.local/bin/idb"
 RESULTS_DIR = Path("/tmp/ios-sim-mcp-bench")
@@ -35,25 +35,25 @@ TOOLS: list[tuple[str, dict | None]] = [
 CLI_TOOLS: list[tuple[str, str, str, str]] = [
     (
         "ui_describe_all",
-        "{swift_bin} cli ui_describe_all udid={udid}",
+        "{swift_bin} ui_describe_all udid={udid}",
         "{idb} ui describe-all --udid {udid} --json",
         "idb",
     ),
     (
         "ui_describe_point",
-        "{swift_bin} cli ui_describe_point x=200 y=400 udid={udid}",
+        "{swift_bin} ui_describe_point x=200 y=400 udid={udid}",
         "{idb} ui describe-point --udid {udid} --json -- 200 400",
         "idb",
     ),
     (
         "ui_tap",
-        "{swift_bin} cli ui_tap x=200 y=400 udid={udid}",
+        "{swift_bin} ui_tap x=200 y=400 udid={udid}",
         "{idb} ui tap --udid {udid} --json -- 200 400",
         "idb",
     ),
     (
         "screenshot",
-        "{swift_bin} cli ui_view udid={udid}",
+        "{swift_bin} ui_view udid={udid}",
         "xcrun simctl io {udid} screenshot --type=png /tmp/bench_ss.png",
         "simctl",
     ),
@@ -213,7 +213,7 @@ def cli_smoke_test(swift_bin: str, idb: str, udid: str) -> None:
     """Quick smoke test for both Swift CLI and idb."""
     info("Smoke testing Swift CLI...")
     try:
-        r = run(f"{swift_bin} cli ui_tap x=0 y=0 udid={udid}", timeout=10)
+        r = run(f"{swift_bin} ui_tap x=0 y=0 udid={udid}", timeout=10)
         if r.returncode != 0:
             error(f"Swift CLI smoke test failed: {r.stderr.strip()}")
             sys.exit(1)
@@ -545,13 +545,15 @@ def main(
             baseline_bin, baseline_label = build_baseline(from_version, verbose=verbose)
 
         # MCP-mode prerequisites
+        # Current binary requires 'mcp' subcommand; baseline (from main) defaults to MCP mode
+        swift_mcp_cmd = f"{swift_bin} mcp"
         if mode in ("mcp", "all"):
             node_index = node_server.split()[-1]
             if not Path(node_index).exists():
                 error(f"Node server not found at {node_index}")
                 click.echo(f"  cd {Path(node_index).parent.parent} && npm run build")
                 sys.exit(1)
-            smoke_test("Swift", swift_bin)
+            smoke_test("Swift", swift_mcp_cmd)
             smoke_test("Node", node_server)
             info("Both MCP servers responding")
 
@@ -580,7 +582,7 @@ def main(
                     sys.exit(1)
             for tool, params in bench_tools:
                 bench(
-                    tool, params, udid, swift_bin, node_server, warmup, min_runs,
+                    tool, params, udid, swift_mcp_cmd, node_server, warmup, min_runs,
                     baseline_swift_cmd=str(baseline_bin) if baseline_bin else None,
                     baseline_label=baseline_label,
                 )
