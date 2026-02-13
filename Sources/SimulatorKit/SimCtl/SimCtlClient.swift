@@ -16,8 +16,10 @@ public enum SimCtlClient {
     /// Used only for `open -a Simulator.app`.
     public static func run(_ command: String, arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
         let timeout = timeout ?? defaultTimeout
-        let shortArgs = arguments.prefix(4).joined(separator: " ")
-        fputs("[SimCtl] run: \(command) \(shortArgs)...\n", stderr)
+        if verboseLogging {
+            let shortArgs = arguments.prefix(4).joined(separator: " ")
+            fputs("[SimCtl] run: \(command) \(shortArgs)...\n", stderr)
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)

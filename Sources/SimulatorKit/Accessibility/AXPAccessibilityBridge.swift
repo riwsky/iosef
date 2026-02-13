@@ -98,7 +98,9 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let result = [try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)]
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
-        FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+        if verboseLogging {
+            FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+        }
 
         // Transform frames from macOS window coords to iOS points.
         // The AX root frame (e.g. 320x480) has a different aspect ratio than the iOS
@@ -108,7 +110,9 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
            rootFrame.width > 0, rootFrame.height > 0 {
             let uniformScale = Double(iosPointSize.width) / rootFrame.width
             let yOffset = (Double(iosPointSize.height) - rootFrame.height * uniformScale) / 2
-            FileHandle.standardError.write(Data("[ios-simulator-mcp] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))\n".utf8))
+            if verboseLogging {
+                FileHandle.standardError.write(Data("[ios-simulator-mcp] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))\n".utf8))
+            }
             return result.map { transformFrames($0, uniformScale: uniformScale, yOffset: yOffset, originX: rootFrame.x, originY: rootFrame.y) }
         }
         return result
@@ -153,7 +157,9 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         var result = try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
-        FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+        if verboseLogging {
+            FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+        }
 
         // Transform frames from macOS window coords to iOS points (uniform scale + centering)
         if let rf = rootFrame, rf.width > 0, rf.height > 0 {

@@ -9,6 +9,7 @@ import SimulatorKit
 /// Swift cooperative thread pool) so the timeout fires even when the operation blocks
 /// a thread on a synchronous ObjC call that can't be cancelled.
 func log(_ msg: String) {
+    guard verboseLogging else { return }
     let ts = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
     FileHandle.standardError.write(Data("[ios_simulator_cli \(ts)] \(msg)\n".utf8))
 }
@@ -73,7 +74,7 @@ func isFiltered(_ name: String) -> Bool {
 /// Extracts a Double from a Value, handling both .int and .double cases.
 func extractDouble(_ value: Value?) -> Double? {
     guard let value = value else { return nil }
-    return Double(value)
+    return Double(value, strict: false)
 }
 
 // MARK: - UDID Schema (reused across tools)
@@ -508,8 +509,7 @@ func handleUITap(_ params: CallTool.Parameters) async throws -> CallTool.Result 
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
 
-    if let durationStr = params.arguments?["duration"]?.stringValue,
-       let duration = Double(durationStr) {
+    if let duration = extractDouble(params.arguments?["duration"]) {
         hidClient.longPress(x: x, y: y, duration: duration)
     } else {
         hidClient.tap(x: x, y: y)
@@ -544,12 +544,7 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
     let delta = extractDouble(params.arguments?["delta"]) ?? 1.0
     let steps = max(1, Int(20.0 / delta))
 
-    let durationSeconds: Double?
-    if let durationStr = params.arguments?["duration"]?.stringValue {
-        durationSeconds = Double(durationStr)
-    } else {
-        durationSeconds = nil
-    }
+    let durationSeconds = extractDouble(params.arguments?["duration"])
 
     hidClient.swipe(
         startX: xStart, startY: yStart,
@@ -700,41 +695,26 @@ func setupGlobals() {
     }
 }
 
-// MARK: - key=value argument parsing
+// MARK: - Common CLI options
 
-func parseKeyValueArgs(_ args: [String]) -> [String: Value] {
-    var arguments: [String: Value] = [:]
-    for arg in args {
-        let parts = arg.split(separator: "=", maxSplits: 1)
-        guard parts.count == 2 else {
-            fputs("Warning: ignoring malformed arg '\(arg)' (expected key=value)\n", stderr)
-            continue
-        }
-        let key = String(parts[0])
-        let val = String(parts[1])
-        if let d = Double(val), val.contains(".") || val.contains("e") {
-            arguments[key] = .double(d)
-        } else if let i = Int(val) {
-            arguments[key] = .int(i)
-        } else if val == "true" {
-            arguments[key] = .bool(true)
-        } else if val == "false" {
-            arguments[key] = .bool(false)
-        } else {
-            arguments[key] = .string(val)
-        }
-    }
-    return arguments
+struct CommonOptions: ParsableArguments {
+    @Flag(name: .long, help: "Enable diagnostic logging")
+    var verbose: Bool = false
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Option(name: .long, help: "Simulator UDID (auto-detected if omitted)")
+    var udid: String? = nil
 }
 
 // MARK: - Shared CLI output helper
 
 /// Runs a tool via handleToolCall and formats the result for terminal output.
 /// Used by all CLI subcommands to avoid duplicating output logic.
-func runToolCLI(toolName: String, args: [String], json: Bool, output: String?) async throws {
+func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output: String?, verbose: Bool = false) async throws {
+    verboseLogging = verbose
     setupGlobals()
-
-    let arguments = parseKeyValueArgs(args)
 
     log("CLI: running tool '\(toolName)' with args: \(arguments)")
     let params = CallTool.Parameters(name: toolName, arguments: arguments.isEmpty ? nil : arguments)
@@ -839,6 +819,7 @@ struct MCPServe: AsyncParsableCommand {
     )
 
     func run() async throws {
+        verboseLogging = true
         setupGlobals()
 
         let server = Server(
@@ -878,14 +859,10 @@ struct GetBootedSimID: AsyncParsableCommand {
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
-
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters")
-    var toolArgs: [String] = []
+    @OptionGroup var common: CommonOptions
 
     func run() async throws {
-        try await runToolCLI(toolName: "get_booted_sim_id", args: toolArgs, json: json, output: nil)
+        try await runToolCLI(toolName: "get_booted_sim_id", arguments: [:], json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -902,14 +879,10 @@ struct OpenSimulator: AsyncParsableCommand {
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
-
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters")
-    var toolArgs: [String] = []
+    @OptionGroup var common: CommonOptions
 
     func run() async throws {
-        try await runToolCLI(toolName: "open_simulator", args: toolArgs, json: json, output: nil)
+        try await runToolCLI(toolName: "open_simulator", arguments: [:], json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -927,18 +900,16 @@ struct UIDescribeAll: AsyncParsableCommand {
 
             Examples:
               ios_simulator_cli ui_describe_all
-              ios_simulator_cli ui_describe_all udid=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+              ios_simulator_cli ui_describe_all --udid XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
-
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (optional: udid)")
-    var toolArgs: [String] = []
+    @OptionGroup var common: CommonOptions
 
     func run() async throws {
-        try await runToolCLI(toolName: "ui_describe_all", args: toolArgs, json: json, output: nil)
+        var args: [String: Value] = [:]
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "ui_describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -953,19 +924,23 @@ struct UIDescribePoint: AsyncParsableCommand {
             Coordinates are in iOS points (same system as ui_tap and ui_describe_all).
 
             Examples:
-              ios_simulator_cli ui_describe_point x=200 y=400
-              ios_simulator_cli ui_describe_point x=100 y=300 --json
+              ios_simulator_cli ui_describe_point --x 200 --y 400
+              ios_simulator_cli ui_describe_point --x 100 --y 300 --json
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
+    @OptionGroup var common: CommonOptions
 
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: x, y; optional: udid)")
-    var toolArgs: [String] = []
+    @Option(name: .long, help: "The x-coordinate")
+    var x: Double
+
+    @Option(name: .long, help: "The y-coordinate")
+    var y: Double
 
     func run() async throws {
-        try await runToolCLI(toolName: "ui_describe_point", args: toolArgs, json: json, output: nil)
+        var args: [String: Value] = ["x": .double(x), "y": .double(y)]
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "ui_describe_point", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -977,22 +952,30 @@ struct UITap: AsyncParsableCommand {
             Sends a HID touch event directly to the simulator (no simctl overhead). \
             Coordinates are in iOS points. Use ui_describe_all to find element positions.
 
-            For long-press, pass duration (in seconds).
+            For long-press, pass --duration (in seconds).
 
             Examples:
-              ios_simulator_cli ui_tap x=200 y=400
-              ios_simulator_cli ui_tap x=100 y=300 duration=0.5
+              ios_simulator_cli ui_tap --x 200 --y 400
+              ios_simulator_cli ui_tap --x 100 --y 300 --duration 0.5
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
+    @OptionGroup var common: CommonOptions
 
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: x, y; optional: duration, udid)")
-    var toolArgs: [String] = []
+    @Option(name: .long, help: "The x-coordinate")
+    var x: Double
+
+    @Option(name: .long, help: "The y-coordinate")
+    var y: Double
+
+    @Option(name: .long, help: "Press duration in seconds")
+    var duration: Double?
 
     func run() async throws {
-        try await runToolCLI(toolName: "ui_tap", args: toolArgs, json: json, output: nil)
+        var args: [String: Value] = ["x": .double(x), "y": .double(y)]
+        if let duration { args["duration"] = .double(duration) }
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "ui_tap", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -1007,19 +990,20 @@ struct UIType: AsyncParsableCommand {
             Tap a text field first with ui_tap to ensure it has focus.
 
             Examples:
-              ios_simulator_cli ui_type text=hello
-              ios_simulator_cli ui_type "text=Hello World"
+              ios_simulator_cli ui_type --text hello
+              ios_simulator_cli ui_type --text "Hello World"
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
+    @OptionGroup var common: CommonOptions
 
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: text; optional: udid)")
-    var toolArgs: [String] = []
+    @Option(name: .long, help: "Text to input")
+    var text: String
 
     func run() async throws {
-        try await runToolCLI(toolName: "ui_type", args: toolArgs, json: json, output: nil)
+        var args: [String: Value] = ["text": .string(text)]
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "ui_type", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -1031,23 +1015,46 @@ struct UISwipe: AsyncParsableCommand {
             Sends a multi-step HID touch drag from (x_start, y_start) to (x_end, y_end). \
             Coordinates are in iOS points.
 
-            Use delta to control step granularity (smaller = more steps = smoother). \
-            Use duration to control speed (in seconds).
+            Use --delta to control step granularity (smaller = more steps = smoother). \
+            Use --duration to control speed (in seconds).
 
             Examples:
-              ios_simulator_cli ui_swipe x_start=200 y_start=600 x_end=200 y_end=200
-              ios_simulator_cli ui_swipe x_start=200 y_start=600 x_end=200 y_end=200 duration=0.3
+              ios_simulator_cli ui_swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
+              ios_simulator_cli ui_swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
+    @OptionGroup var common: CommonOptions
 
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: x_start, y_start, x_end, y_end; optional: delta, duration, udid)")
-    var toolArgs: [String] = []
+    @Option(name: .customLong("x-start"), help: "The starting x-coordinate")
+    var xStart: Double
+
+    @Option(name: .customLong("y-start"), help: "The starting y-coordinate")
+    var yStart: Double
+
+    @Option(name: .customLong("x-end"), help: "The ending x-coordinate")
+    var xEnd: Double
+
+    @Option(name: .customLong("y-end"), help: "The ending y-coordinate")
+    var yEnd: Double
+
+    @Option(name: .long, help: "The size of each step in the swipe (default is 1)")
+    var delta: Double?
+
+    @Option(name: .long, help: "Swipe duration in seconds")
+    var duration: Double?
 
     func run() async throws {
-        try await runToolCLI(toolName: "ui_swipe", args: toolArgs, json: json, output: nil)
+        var args: [String: Value] = [
+            "x_start": .double(xStart),
+            "y_start": .double(yStart),
+            "x_end": .double(xEnd),
+            "y_end": .double(yEnd),
+        ]
+        if let delta { args["delta"] = .double(delta) }
+        if let duration { args["duration"] = .double(duration) }
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "ui_swipe", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -1067,21 +1074,24 @@ struct UIView: AsyncParsableCommand {
             Examples:
               ios_simulator_cli ui_view
               ios_simulator_cli ui_view --output /tmp/screen.jpg
-              ios_simulator_cli ui_view output_path=/tmp/screen.png type=png
+              ios_simulator_cli ui_view --output /tmp/screen.png --type png
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
+    @OptionGroup var common: CommonOptions
 
     @Option(name: .long, help: "Save screenshot to this file path")
-    var output: String? = nil
+    var output: String?
 
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (optional: output_path, type, udid)")
-    var toolArgs: [String] = []
+    @Option(name: .long, help: "Image format: png, tiff, bmp, gif, jpeg (default: png)")
+    var type: String?
 
     func run() async throws {
-        try await runToolCLI(toolName: "ui_view", args: toolArgs, json: json, output: output)
+        var args: [String: Value] = [:]
+        if let output { args["output_path"] = .string(output) }
+        if let type { args["type"] = .string(type) }
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "ui_view", arguments: args, json: common.json, output: output, verbose: common.verbose)
     }
 }
 
@@ -1094,19 +1104,20 @@ struct InstallApp: AsyncParsableCommand {
             (faster than simctl install). Supports .app directories and .ipa files.
 
             Examples:
-              ios_simulator_cli install_app app_path=/path/to/MyApp.app
-              ios_simulator_cli install_app app_path=./build/MyApp.app
+              ios_simulator_cli install_app --app-path /path/to/MyApp.app
+              ios_simulator_cli install_app --app-path ./build/MyApp.app
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
+    @OptionGroup var common: CommonOptions
 
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: app_path; optional: udid)")
-    var toolArgs: [String] = []
+    @Option(name: .customLong("app-path"), help: "Path to the app bundle (.app directory or .ipa file) to install")
+    var appPath: String
 
     func run() async throws {
-        try await runToolCLI(toolName: "install_app", args: toolArgs, json: json, output: nil)
+        var args: [String: Value] = ["app_path": .string(appPath)]
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "install_app", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
@@ -1119,18 +1130,23 @@ struct LaunchApp: AsyncParsableCommand {
             Optionally terminates the app first if it's already running.
 
             Examples:
-              ios_simulator_cli launch_app bundle_id=com.apple.mobilesafari
-              ios_simulator_cli launch_app bundle_id=com.example.myapp terminate_running=true
+              ios_simulator_cli launch_app --bundle-id com.apple.mobilesafari
+              ios_simulator_cli launch_app --bundle-id com.example.myapp --terminate-running
             """
     )
 
-    @Flag(name: .long, help: "Output results as JSON")
-    var json: Bool = false
+    @OptionGroup var common: CommonOptions
 
-    @Argument(parsing: .allUnrecognized, help: "key=value parameters (required: bundle_id; optional: terminate_running, udid)")
-    var toolArgs: [String] = []
+    @Option(name: .customLong("bundle-id"), help: "Bundle identifier of the app to launch (e.g., com.apple.mobilesafari)")
+    var bundleID: String
+
+    @Flag(name: .customLong("terminate-running"), help: "Terminate the app if it is already running before launching")
+    var terminateRunning: Bool = false
 
     func run() async throws {
-        try await runToolCLI(toolName: "launch_app", args: toolArgs, json: json, output: nil)
+        var args: [String: Value] = ["bundle_id": .string(bundleID)]
+        if terminateRunning { args["terminate_running"] = .bool(true) }
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "launch_app", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }

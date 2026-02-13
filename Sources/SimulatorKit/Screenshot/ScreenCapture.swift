@@ -10,6 +10,7 @@ import IOSurface
 public enum ScreenCapture {
 
     private static func log(_ message: String) {
+        guard verboseLogging else { return }
         fputs("[ScreenCapture] \(message)\n", stderr)
     }
 
