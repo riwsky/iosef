@@ -13,3 +13,9 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 *CLI mode:* `ios_simulator_cli <tool> [key=value ...]` — runs tools directly as top-level subcommands. Stderr shows timing/diagnostic logs. Use `ios_simulator_cli mcp` to start the MCP server.
 
 *Coordinate math:* agents can navigate the MCP in two ways: via the accessibility tree coordinates, and via their native graphical understanding. To that end, it's important that the pixels of any screenshot tools use the same coordinates and scale as the accessibility tree and the tap tools. Further complicating this is the fact that LLMs have limits on image size. All told, we end up wanting to shrink all of these by a constant, well-behaved scale. If you look through the commit history of joshuayoes/ios-simulator-mcp, you'll see a change that does this resizing; use that as inspiration.
+
+*MCPTestApp Xcode project:* When adding new `.swift` files to MCPTestApp, you must add them to `MCPTestApp.xcodeproj/project.pbxproj` in 4 sections: PBXBuildFile, PBXFileReference, PBXGroup children, and PBXSourcesBuildPhase files. Follow the existing `AA`/`BB` ID convention with the next available number.
+
+*Multiple simulators:* Multiple simulators are often booted. The test app targets a simulator named after the repo dir (`ios-simulator-mcp-swift`). When running smoke tests or CLI commands, pass `--udid` explicitly. UDID: `xcrun simctl list devices | grep "ios-simulator-mcp-swift"`.
+
+*Validation:* Use the `mcp-playground-validate` skill to run smoke tests after code changes. Quick: `~/build/tools/skills/mcp-playground-validate/scripts/smoke_test.py --udid <UDID> -v`. Tests tap, swipe, screenshot, text input, AX tree, and coordinate alignment against MCPTestApp.
