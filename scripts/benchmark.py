@@ -25,8 +25,8 @@ BASELINE_WORKSPACE_NAME = "bench-baseline"
 TOOLS: list[tuple[str, dict | None]] = [
     ("get_booted_sim_id", None),
     ("ui_describe_all", None),
-    ("ui_describe_point", {"x": 200, "y": 400}),
-    ("ui_tap", {"x": 200, "y": 400}),
+    ("ui_describe_point", {"x": 165, "y": 269}),
+    ("ui_tap", {"x": 165, "y": 269}),
     ("ui_view", None),
 ]
 
@@ -41,14 +41,14 @@ CLI_TOOLS: list[tuple[str, str, str, str]] = [
     ),
     (
         "ui_describe_point",
-        "{swift_bin} ui_describe_point --x 200 --y 400 --udid {udid}",
-        "{idb} ui describe-point --udid {udid} --json -- 200 400",
+        "{swift_bin} ui_describe_point --x 165 --y 269 --udid {udid}",
+        "{idb} ui describe-point --udid {udid} --json -- 165 269",
         "idb",
     ),
     (
         "ui_tap",
-        "{swift_bin} ui_tap --x 200 --y 400 --udid {udid}",
-        "{idb} ui tap --udid {udid} --json -- 200 400",
+        "{swift_bin} ui_tap --x 165 --y 269 --udid {udid}",
+        "{idb} ui tap --udid {udid} --json -- 165 269",
         "idb",
     ),
     (
@@ -545,7 +545,6 @@ def main(
             baseline_bin, baseline_label = build_baseline(from_version, verbose=verbose)
 
         # MCP-mode prerequisites
-        # Current binary requires 'mcp' subcommand; baseline (from main) defaults to MCP mode
         swift_mcp_cmd = f"{swift_bin} mcp"
         if mode in ("mcp", "all"):
             node_index = node_server.split()[-1]
@@ -583,7 +582,7 @@ def main(
             for tool, params in bench_tools:
                 bench(
                     tool, params, udid, swift_mcp_cmd, node_server, warmup, min_runs,
-                    baseline_swift_cmd=str(baseline_bin) if baseline_bin else None,
+                    baseline_swift_cmd=f"{baseline_bin} mcp" if baseline_bin else None,
                     baseline_label=baseline_label,
                 )
 
