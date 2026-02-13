@@ -22,6 +22,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     private let delegate: AnyObject     // AXPTranslationDispatcher (our NSObject subclass)
     private let device: AnyObject       // SimDevice
     private let iosPointSize: CGSize    // iOS point dimensions (e.g. 402x874)
+    private var cachedRootFrame: CGRect?
 
     public init(udid: String) throws {
         self.bridge = PrivateFrameworkBridge.shared
@@ -85,6 +86,12 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         (element as AnyObject).value(forKey: "translation").map {
             ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+        }
+
+        // Update cached root frame from this element (free — no extra XPC call)
+        let frameSel = NSSelectorFromString("accessibilityFrame")
+        if (element as AnyObject).responds(to: frameSel) {
+            cachedRootFrame = callFrameMethod(element as AnyObject, selector: frameSel)
         }
 
         var elementCount = 0
@@ -166,7 +173,12 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     // MARK: - Frame coordinate transformation
 
     /// Fetches the root (frontmost app) element's frame in AX coordinates.
+    /// Uses a cached value when available to avoid an extra XPC round-trip.
     private func getRootFrame(token: String) -> CGRect? {
+        if let cached = cachedRootFrame {
+            return cached
+        }
+
         guard let translation = performTranslation(
             selector: "frontmostApplicationWithDisplayId:bridgeDelegateToken:",
             arg1: UInt32(0),
@@ -183,7 +195,14 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         let frameSel = NSSelectorFromString("accessibilityFrame")
         guard (element as AnyObject).responds(to: frameSel) else { return nil }
-        return callFrameMethod(element as AnyObject, selector: frameSel)
+        let frame = callFrameMethod(element as AnyObject, selector: frameSel)
+        cachedRootFrame = frame
+        return frame
+    }
+
+    /// Clears the cached root frame, forcing the next point query to re-fetch it.
+    public func invalidateRootFrameCache() {
+        cachedRootFrame = nil
     }
 
     /// Recursively transforms all frames in a TreeNode from macOS window coords to iOS points.

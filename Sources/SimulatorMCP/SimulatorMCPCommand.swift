@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 import MCP
 import SimulatorKit
@@ -491,9 +492,9 @@ func handleOpenSimulator() async throws -> CallTool.Result {
 
 func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
 
     let json = try await withTimeout("describe_all", .seconds(12)) {
-        let axpBridge = try AXPAccessibilityBridge(udid: udid)
         let nodes = try axpBridge.accessibilityElements()
         return try TreeSerializer.toJSON(nodes)
     }
@@ -508,8 +509,9 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
         return .init(content: [.text("Missing required parameters: x, y")], isError: true)
     }
 
+    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
+
     let json = try await withTimeout("describe_point", .seconds(12)) {
-        let axpBridge = try AXPAccessibilityBridge(udid: udid)
         let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
         return try TreeSerializer.toJSON(node)
     }
@@ -783,31 +785,22 @@ func computeDefaultDeviceName() -> String? {
     return URL(fileURLWithPath: root).lastPathComponent
 }
 
-SimCtlClient.defaultDeviceName = computeDefaultDeviceName()
+// MARK: - Setup
 
-// Configure global process timeout from environment
-if let timeoutStr = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_TIMEOUT"],
-   let timeoutSecs = Double(timeoutStr), timeoutSecs > 0 {
-    SimCtlClient.defaultTimeout = .seconds(Int64(timeoutSecs))
+func setupGlobals() {
+    SimCtlClient.defaultDeviceName = computeDefaultDeviceName()
+
+    if let timeoutStr = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_TIMEOUT"],
+       let timeoutSecs = Double(timeoutStr), timeoutSecs > 0 {
+        SimCtlClient.defaultTimeout = .seconds(Int64(timeoutSecs))
+    }
 }
 
-// MARK: - CLI mode
+// MARK: - key=value argument parsing
 
-/// Run a tool directly from the command line, bypassing the MCP server.
-/// Usage: ios-simulator-mcp cli <tool_name> [key=value ...]
-/// Example: ios-simulator-mcp cli ui_describe_all udid=C7A7BFA8-...
-///          ios-simulator-mcp cli ui_describe_point x=100 y=200
-///          ios-simulator-mcp cli ui_tap x=100 y=200
-func runCLI(_ args: [String]) async {
-    guard let toolName = args.first else {
-        fputs("Usage: ios-simulator-mcp cli <tool_name> [key=value ...]\n", stderr)
-        fputs("Available tools: \(allTools().map(\.name).joined(separator: ", "))\n", stderr)
-        return
-    }
-
-    // Parse key=value pairs into MCP arguments
+func parseKeyValueArgs(_ args: [String]) -> [String: Value] {
     var arguments: [String: Value] = [:]
-    for arg in args.dropFirst() {
+    for arg in args {
         let parts = arg.split(separator: "=", maxSplits: 1)
         guard parts.count == 2 else {
             fputs("Warning: ignoring malformed arg '\(arg)' (expected key=value)\n", stderr)
@@ -815,7 +808,6 @@ func runCLI(_ args: [String]) async {
         }
         let key = String(parts[0])
         let val = String(parts[1])
-        // Try to parse as number, fall back to string
         if let d = Double(val), val.contains(".") || val.contains("e") {
             arguments[key] = .double(d)
         } else if let i = Int(val) {
@@ -828,54 +820,244 @@ func runCLI(_ args: [String]) async {
             arguments[key] = .string(val)
         }
     }
+    return arguments
+}
 
-    log("CLI: running tool '\(toolName)' with args: \(arguments)")
-    let params = CallTool.Parameters(name: toolName, arguments: arguments.isEmpty ? nil : arguments)
-    let result = await handleToolCall(params)
+// MARK: - Tool schema helpers
 
-    // Print result to stdout
-    for content in result.content {
-        switch content {
-        case .text(let text):
-            print(text)
-        case .image:
-            print("<image data omitted>")
-        default:
-            print("<unknown content type>")
+func toolRequiredParams(_ tool: Tool) -> [String] {
+    guard case .object(let schema) = tool.inputSchema,
+          case .array(let required)? = schema["required"] else {
+        return []
+    }
+    return required.compactMap(\.stringValue)
+}
+
+func toolProperties(_ tool: Tool) -> [(name: String, schema: [String: Value])] {
+    guard case .object(let schema) = tool.inputSchema,
+          case .object(let props)? = schema["properties"] else {
+        return []
+    }
+    return props.sorted(by: { $0.key < $1.key }).compactMap { key, value in
+        guard case .object(let propSchema) = value else { return nil }
+        return (name: key, schema: propSchema)
+    }
+}
+
+// MARK: - ArgumentParser commands
+
+@main
+struct SimulatorMCPCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ios-simulator-mcp",
+        abstract: "iOS Simulator MCP server and CLI tool",
+        version: serverVersion,
+        subcommands: [Serve.self, CLI.self, Tools.self],
+        defaultSubcommand: Serve.self
+    )
+}
+
+// MARK: Serve (default — MCP server mode)
+
+struct Serve: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Start the MCP server (default)"
+    )
+
+    func run() async throws {
+        setupGlobals()
+
+        let server = Server(
+            name: "ios-simulator",
+            version: serverVersion,
+            capabilities: .init(tools: .init(listChanged: false))
+        )
+
+        await server.withMethodHandler(ListTools.self) { _ in
+            .init(tools: allTools())
+        }
+
+        await server.withMethodHandler(CallTool.self) { params in
+            await handleToolCall(params)
+        }
+
+        let transport = StdioTransport()
+        try await server.start(transport: transport)
+
+        try await Task.sleep(for: .seconds(365 * 24 * 3600))
+    }
+}
+
+// MARK: CLI — direct tool invocation
+
+struct CLI: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "cli",
+        abstract: "Run a tool directly, bypassing the MCP protocol",
+        discussion: """
+            Examples:
+              ios-simulator-mcp cli get_booted_sim_id
+              ios-simulator-mcp cli ui_tap x=200 y=400
+              ios-simulator-mcp cli ui_view --output /tmp/screen.jpg
+              ios-simulator-mcp cli ui_describe_all --json
+            """
+    )
+
+    @Flag(name: .long, help: "Output results as JSON")
+    var json: Bool = false
+
+    @Option(name: .long, help: "Save image output to this file path")
+    var output: String? = nil
+
+    @Argument(parsing: .allUnrecognized, help: "Tool name followed by key=value parameters")
+    var toolArgs: [String] = []
+
+    func run() async throws {
+        setupGlobals()
+
+        guard let toolName = toolArgs.first else {
+            throw ValidationError("Missing tool name. Run 'ios-simulator-mcp tools' to list available tools.")
+        }
+
+        let tools = allTools()
+        guard let tool = tools.first(where: { $0.name == toolName }) else {
+            let names = tools.map(\.name).joined(separator: ", ")
+            throw ValidationError("Unknown tool '\(toolName)'. Available: \(names)")
+        }
+
+        let kvArgs = Array(toolArgs.dropFirst())
+        let arguments = parseKeyValueArgs(kvArgs)
+
+        // Validate required params
+        let required = toolRequiredParams(tool)
+        let missing = required.filter { arguments[$0] == nil }
+        if !missing.isEmpty {
+            throw ValidationError("Missing required parameter\(missing.count > 1 ? "s" : ""): \(missing.joined(separator: ", ")). Run 'ios-simulator-mcp tools \(toolName)' for details.")
+        }
+
+        log("CLI: running tool '\(toolName)' with args: \(arguments)")
+        let params = CallTool.Parameters(name: toolName, arguments: arguments.isEmpty ? nil : arguments)
+        let result = await handleToolCall(params)
+
+        if json {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(result)
+            print(String(data: data, encoding: .utf8)!)
+        } else {
+            for content in result.content {
+                switch content {
+                case .text(let text):
+                    print(text)
+                case .image(let data, let mimeType, _):
+                    if let outputPath = output {
+                        let path = ensureAbsolutePath(outputPath)
+                        guard let imageData = Data(base64Encoded: data) else {
+                            fputs("Error: failed to decode base64 image data\n", stderr)
+                            continue
+                        }
+                        try imageData.write(to: URL(fileURLWithPath: path))
+                        print("Image (\(mimeType)) saved to \(path)")
+                    } else {
+                        print("Image (\(mimeType), \(data.count) bytes base64). Use --output <path> to save.")
+                    }
+                case .audio(let data, let mimeType):
+                    if let outputPath = output {
+                        let path = ensureAbsolutePath(outputPath)
+                        guard let audioData = Data(base64Encoded: data) else {
+                            fputs("Error: failed to decode base64 audio data\n", stderr)
+                            continue
+                        }
+                        try audioData.write(to: URL(fileURLWithPath: path))
+                        print("Audio (\(mimeType)) saved to \(path)")
+                    } else {
+                        print("Audio (\(mimeType), \(data.count) bytes base64). Use --output <path> to save.")
+                    }
+                default:
+                    print("<unknown content type>")
+                }
+            }
+        }
+
+        if result.isError == true {
+            fputs("Tool returned error\n", stderr)
+            throw ExitCode.failure
+        }
+        log("CLI: done")
+    }
+}
+
+// MARK: Tools — list tools and show per-tool help
+
+struct Tools: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "tools",
+        abstract: "List available tools or show details for a specific tool"
+    )
+
+    @Argument(help: "Tool name to show detailed help for")
+    var toolName: String? = nil
+
+    func run() throws {
+        let tools = allTools()
+
+        if let name = toolName {
+            guard let tool = tools.first(where: { $0.name == name }) else {
+                let names = tools.map(\.name).joined(separator: ", ")
+                throw ValidationError("Unknown tool '\(name)'. Available: \(names)")
+            }
+            printToolDetail(tool)
+        } else {
+            printToolList(tools)
         }
     }
 
-    if result.isError == true {
-        fputs("Tool returned error\n", stderr)
-    }
-    log("CLI: done")
-}
-
-// MARK: - Entry point
-
-let args = CommandLine.arguments
-if args.count >= 2 && args[1] == "cli" {
-    await runCLI(Array(args.dropFirst(2)))
-} else {
-    // Normal MCP server mode
-    let server = Server(
-        name: "ios-simulator",
-        version: serverVersion,
-        capabilities: .init(tools: .init(listChanged: false))
-    )
-
-    await server.withMethodHandler(ListTools.self) { _ in
-        return .init(tools: allTools())
+    private func printToolList(_ tools: [Tool]) {
+        let maxName = tools.map(\.name.count).max() ?? 0
+        for tool in tools {
+            let pad = String(repeating: " ", count: maxName - tool.name.count)
+            print("  \(tool.name)\(pad)  \(tool.description ?? "")")
+        }
+        print()
+        print("Run 'ios-simulator-mcp tools <name>' for parameter details.")
     }
 
-    await server.withMethodHandler(CallTool.self) { params in
-        return await handleToolCall(params)
+    private func printToolDetail(_ tool: Tool) {
+        print(tool.name)
+        if let desc = tool.description {
+            print("  \(desc)")
+        }
+        print()
+
+        let props = toolProperties(tool)
+        let required = Set(toolRequiredParams(tool))
+
+        if props.isEmpty {
+            print("  No parameters.")
+            return
+        }
+
+        print("  Parameters:")
+        for prop in props {
+            let req = required.contains(prop.name) ? " (required)" : ""
+            let type = prop.schema["type"]?.stringValue ?? "any"
+            let desc = prop.schema["description"]?.stringValue ?? ""
+
+            print("    \(prop.name)  [\(type)]\(req)")
+            if !desc.isEmpty {
+                print("      \(desc)")
+            }
+
+            if case .array(let enumValues)? = prop.schema["enum"] {
+                let vals = enumValues.compactMap(\.stringValue).joined(separator: ", ")
+                print("      values: \(vals)")
+            }
+            if let pattern = prop.schema["pattern"]?.stringValue {
+                print("      pattern: \(pattern)")
+            }
+            if let maxLen = prop.schema["maxLength"] {
+                print("      maxLength: \(maxLen)")
+            }
+        }
     }
-
-    let transport = StdioTransport()
-    try await server.start(transport: transport)
-
-    // Keep the process alive — StdioTransport will handle the event loop.
-    // If the transport closes (stdin EOF), the process should exit.
-    try await Task.sleep(for: .seconds(365 * 24 * 3600))
 }
