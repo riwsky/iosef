@@ -10,6 +10,10 @@ class TapState {
     var currentButton: String? = nil
     var flashingButton: String? = nil
 
+    var swipeCount = 0
+    var lastSwipeDirection: String? = nil
+    var lastSwipeDistance: Double? = nil
+
     var textFieldValue = ""
     var toggle1 = false
     var toggle2 = false
@@ -36,6 +40,18 @@ class TapState {
         }
 
         print("[MCPTest] Button tapped: R\(row) C\(col) (tap #\(tapCount))")
+    }
+
+    func recordSwipe(translation: CGSize) {
+        swipeCount += 1
+        let dx = translation.width, dy = translation.height
+        if abs(dx) > abs(dy) {
+            lastSwipeDirection = dx > 0 ? "right" : "left"
+        } else {
+            lastSwipeDirection = dy > 0 ? "down" : "up"
+        }
+        lastSwipeDistance = sqrt(dx * dx + dy * dy)
+        print("[MCPTest] Swipe: \(lastSwipeDirection!) \(String(format: "%.0f", lastSwipeDistance!))pt (swipe #\(swipeCount))")
     }
 
     func buttonColor(row: Int, col: Int) -> Color {

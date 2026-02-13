@@ -17,6 +17,13 @@ struct ContentView: View {
 
             Divider()
 
+            SwipeTestSection(state: state)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frame(height: 80)
+
+            Divider()
+
             ControlsSection(state: state)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
