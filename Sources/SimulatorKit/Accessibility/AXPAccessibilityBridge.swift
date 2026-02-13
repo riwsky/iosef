@@ -21,6 +21,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     private let translator: AnyObject   // AXPTranslator
     private let delegate: AnyObject     // AXPTranslationDispatcher (our NSObject subclass)
     private let device: AnyObject       // SimDevice
+    private let iosPointSize: CGSize    // iOS point dimensions (e.g. 402x874)
 
     public init(udid: String) throws {
         self.bridge = PrivateFrameworkBridge.shared
@@ -28,6 +29,14 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         self.translator = try bridge.getAXPTranslatorSharedInstance()
         self.device = try bridge.lookUpDevice(udid: udid)
+
+        // Compute iOS point size = device pixels / screen scale
+        let pixelSize = bridge.screenSize(forDevice: device)
+        let scale = bridge.screenScale(forDevice: device)
+        self.iosPointSize = CGSize(
+            width: CGFloat(pixelSize.width) / CGFloat(scale),
+            height: CGFloat(pixelSize.height) / CGFloat(scale)
+        )
 
         // Create our delegate that bridges AXPTranslator callbacks to SimDevice
         let del = AXPTranslationDispatcher(device: self.device, bridge: self.bridge)
@@ -83,10 +92,19 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
         FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+
+        // Transform frames from macOS window coords to iOS points
+        if let rootFrame = result.first?.frame,
+           rootFrame.width > 0, rootFrame.height > 0 {
+            let xScale = Double(iosPointSize.width) / rootFrame.width
+            let yScale = Double(iosPointSize.height) / rootFrame.height
+            FileHandle.standardError.write(Data("[ios-simulator-mcp] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (scale \(String(format: "%.3f", xScale))x\(String(format: "%.3f", yScale)))\n".utf8))
+            return result.map { transformFrames($0, xScale: xScale, yScale: yScale, originX: rootFrame.x, originY: rootFrame.y) }
+        }
         return result
     }
 
-    /// Returns the accessibility element at the given iOS coordinates.
+    /// Returns the accessibility element at the given iOS point coordinates.
     /// The entire operation is bounded by `timeout`.
     public func accessibilityElementAtPoint(x: Double, y: Double, timeout: Duration = .seconds(10)) throws -> TreeNode {
         let start = ContinuousClock.now
@@ -97,6 +115,11 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let token = UUID().uuidString
         dispatcher.registerDevice(forToken: token, deadline: deadline)
         defer { dispatcher.unregisterToken(token) }
+
+        // Get root frame for coordinate scaling before point lookup
+        let rootFrame = getRootFrame(token: token)
+
+        try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
 
         let point = CGPoint(x: x, y: y)
 
@@ -117,10 +140,17 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         }
 
         var elementCount = 0
-        let result = try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
+        var result = try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
         FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
+
+        // Transform frames from macOS window coords to iOS points
+        if let rf = rootFrame, rf.width > 0, rf.height > 0 {
+            let xScale = Double(iosPointSize.width) / Double(rf.width)
+            let yScale = Double(iosPointSize.height) / Double(rf.height)
+            result = transformFrames(result, xScale: xScale, yScale: yScale, originX: Double(rf.origin.x), originY: Double(rf.origin.y))
+        }
         return result
     }
 
@@ -128,6 +158,55 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         if ContinuousClock.now >= deadline {
             throw TimeoutError.accessibilityTimedOut(timeoutSeconds: timeoutSeconds)
         }
+    }
+
+    // MARK: - Frame coordinate transformation
+
+    /// Fetches the root (frontmost app) element's frame in AX coordinates.
+    private func getRootFrame(token: String) -> CGRect? {
+        guard let translation = performTranslation(
+            selector: "frontmostApplicationWithDisplayId:bridgeDelegateToken:",
+            arg1: UInt32(0),
+            arg2: token
+        ) else { return nil }
+
+        (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+
+        guard let element = macPlatformElement(from: translation) else { return nil }
+
+        (element as AnyObject).value(forKey: "translation").map {
+            ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+        }
+
+        let frameSel = NSSelectorFromString("accessibilityFrame")
+        guard (element as AnyObject).responds(to: frameSel) else { return nil }
+        return callFrameMethod(element as AnyObject, selector: frameSel)
+    }
+
+    /// Recursively transforms all frames in a TreeNode from macOS window coords to iOS points.
+    private func transformFrames(_ node: TreeNode, xScale: Double, yScale: Double, originX: Double, originY: Double) -> TreeNode {
+        let newFrame: TreeNode.FrameInfo?
+        if let f = node.frame {
+            newFrame = TreeNode.FrameInfo(
+                x: ((f.x - originX) * xScale * 100).rounded() / 100,
+                y: ((f.y - originY) * yScale * 100).rounded() / 100,
+                width: (f.width * xScale * 100).rounded() / 100,
+                height: (f.height * yScale * 100).rounded() / 100
+            )
+        } else {
+            newFrame = nil
+        }
+        return TreeNode(
+            role: node.role,
+            label: node.label,
+            title: node.title,
+            value: node.value,
+            identifier: node.identifier,
+            hint: node.hint,
+            traits: node.traits,
+            frame: newFrame,
+            children: node.children.map { transformFrames($0, xScale: xScale, yScale: yScale, originX: originX, originY: originY) }
+        )
     }
 
     // MARK: - Private helpers

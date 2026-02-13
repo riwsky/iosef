@@ -10,8 +10,9 @@ public enum ScreenCapture {
     }
 
     /// Captures the simulator screen as a JPEG via simctl and returns base64-encoded data.
-    /// Times out after `timeout` (default 15s), killing the process if exceeded.
-    public static func captureSimulator(udid: String, timeout: Duration = .seconds(5)) throws -> (base64: String, width: Int, height: Int) {
+    /// The image is downscaled from device pixels to iOS points using `screenScale`
+    /// so that screenshot coordinates align with `ui_tap` and `ui_describe_all`.
+    public static func captureSimulator(udid: String, screenScale: Float, timeout: Duration = .seconds(5)) throws -> (base64: String, width: Int, height: Int) {
         let tempPath = "/tmp/ios-sim-mcp-\(UUID().uuidString).png"
         defer { try? FileManager.default.removeItem(atPath: tempPath) }
 
@@ -60,13 +61,36 @@ public enum ScreenCapture {
             throw CaptureError.jpegEncodingFailed
         }
 
-        log("CGImage: \(cgImage.width)x\(cgImage.height), encoding JPEG...")
-        let jpegData = try encodeJPEG(image: cgImage, quality: 0.8)
+        // Downscale from device pixels to iOS points
+        let targetWidth = Int(round(Double(cgImage.width) / Double(screenScale)))
+        let targetHeight = Int(round(Double(cgImage.height) / Double(screenScale)))
+        log("CGImage: \(cgImage.width)x\(cgImage.height), resizing to \(targetWidth)x\(targetHeight) (scale \(screenScale))...")
+        guard let resized = resizeImage(cgImage, width: targetWidth, height: targetHeight) else {
+            throw CaptureError.jpegEncodingFailed
+        }
+
+        let jpegData = try encodeJPEG(image: resized, quality: 0.8)
         log("JPEG encoded: \(jpegData.count) bytes, encoding base64...")
         let base64 = jpegData.base64EncodedString()
         log("Base64 encoded: \(base64.count) chars, done")
 
-        return (base64: base64, width: cgImage.width, height: cgImage.height)
+        return (base64: base64, width: targetWidth, height: targetHeight)
+    }
+
+    /// Resizes a CGImage to the given dimensions using high-quality interpolation.
+    private static func resizeImage(_ image: CGImage, width: Int, height: Int) -> CGImage? {
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()
     }
 
     /// Encodes a CGImage as JPEG data.

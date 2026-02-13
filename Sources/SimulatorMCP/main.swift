@@ -583,8 +583,12 @@ func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     fputs("[ui_view] UDID resolved: \(udid), capturing screenshot...\n", stderr)
 
-    let capture = try ScreenCapture.captureSimulator(udid: udid)
-    fputs("[ui_view] Screenshot captured (\(capture.width)x\(capture.height)), returning response...\n", stderr)
+    // Get screen scale to downscale screenshot from device pixels to iOS points
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    let screenScale = hidClient.screenScale
+
+    let capture = try ScreenCapture.captureSimulator(udid: udid, screenScale: screenScale)
+    fputs("[ui_view] Screenshot captured (\(capture.width)x\(capture.height) at scale \(screenScale)), returning response...\n", stderr)
 
     return .init(content: [
         .image(data: capture.base64, mimeType: "image/jpeg", metadata: nil),
