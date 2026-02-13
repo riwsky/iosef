@@ -406,7 +406,7 @@ def main(
     info(f"Results saved to {RESULTS_DIR}/")
     info(f"Summary written to {summary_path}")
     click.echo()
-    click.echo(summary)
+    # click.echo(summary)
 
 
 if __name__ == "__main__":

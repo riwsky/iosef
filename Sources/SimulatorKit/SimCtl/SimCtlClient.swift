@@ -138,18 +138,56 @@ public enum SimCtlClient {
 
     /// Gets the UDID of the booted device, or uses the provided one.
     public static func resolveDeviceID(_ udid: String?) async throws -> String {
+        let device = try await resolveDevice(udid)
+        return device.udid
+    }
+
+    /// Resolves a device with full info (UDID + name) in a single `simctl list devices -j` call.
+    /// Checks: explicit UDID → default device by name → first booted simulator.
+    public static func resolveDevice(_ udid: String?) async throws -> DeviceInfo {
         if let udid = udid {
-            return udid
+            // Explicit UDID: still need one simctl call to get the name
+            let result = try await simctl("list", "devices", "-j")
+            guard let data = result.stdout.data(using: .utf8) else {
+                throw SimCtlError.parseError("Failed to parse simctl output as UTF-8")
+            }
+            let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
+            for (_, devices) in deviceList.devices {
+                for device in devices where device.udid == udid {
+                    return device
+                }
+            }
+            // UDID given but not found — return minimal info
+            return DeviceInfo(name: udid, udid: udid, state: "Unknown", isAvailable: nil)
         }
+
+        // Single simctl call to get all device info
+        let result = try await simctl("list", "devices", "-j")
+        guard let data = result.stdout.data(using: .utf8) else {
+            throw SimCtlError.parseError("Failed to parse simctl output as UTF-8")
+        }
+        let deviceList = try JSONDecoder().decode(DeviceListResponse.self, from: data)
 
         // Try default device by name (set from VCS root at startup)
-        if let name = defaultDeviceName,
-           let device = try await findDeviceByName(name) {
-            return device.udid
+        if let name = defaultDeviceName {
+            let candidates = [name, "\(name)-main"]
+            for candidate in candidates {
+                for (_, devices) in deviceList.devices {
+                    for device in devices where device.name == candidate && (device.isAvailable ?? false) {
+                        return device
+                    }
+                }
+            }
         }
 
-        let device = try await getBootedDevice()
-        return device.udid
+        // Fall back to first booted simulator
+        for (_, devices) in deviceList.devices {
+            for device in devices where device.state == "Booted" {
+                return device
+            }
+        }
+
+        throw SimCtlError.noBootedSimulator
     }
 
     /// Gets the device name for a given UDID.

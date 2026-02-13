@@ -38,6 +38,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     private var loaded = false
     private var axpLoaded = false
     private let lock = NSLock()
+    private var deviceCache: [String: AnyObject] = [:]
 
     // MARK: - Resolved function pointers from SimulatorKit
 
@@ -92,8 +93,25 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     // MARK: - CoreSimulator ObjC Bridge
 
-    /// Looks up a SimDevice by UDID.
+    /// Looks up a SimDevice by UDID. Cached per UDID after first lookup.
     public func lookUpDevice(udid: String) throws -> AnyObject {
+        lock.lock()
+        if let cached = deviceCache[udid] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let device = try lookUpDeviceUncached(udid: udid)
+
+        lock.lock()
+        deviceCache[udid] = device
+        lock.unlock()
+
+        return device
+    }
+
+    private func lookUpDeviceUncached(udid: String) throws -> AnyObject {
         try ensureLoaded()
 
         // Get SimServiceContext class

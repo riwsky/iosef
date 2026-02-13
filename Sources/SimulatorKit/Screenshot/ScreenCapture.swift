@@ -16,8 +16,6 @@ public enum ScreenCapture {
         let tempPath = "/tmp/ios-sim-mcp-\(UUID().uuidString).png"
         defer { try? FileManager.default.removeItem(atPath: tempPath) }
 
-        log("Starting simctl screenshot for \(udid) -> \(tempPath)")
-
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         process.arguments = ["simctl", "io", udid, "screenshot", "--type=png", "--", tempPath]
@@ -31,7 +29,6 @@ public enum ScreenCapture {
         }
 
         try process.run()
-        log("simctl process launched (pid \(process.processIdentifier)), waiting...")
 
         let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
         let waitResult = semaphore.wait(timeout: .now() + timeoutSeconds)
@@ -44,16 +41,11 @@ public enum ScreenCapture {
             throw TimeoutError.processTimedOut(command: "xcrun simctl io screenshot", timeoutSeconds: timeoutSeconds)
         }
 
-        let simctlStderr = String(data: stderrPipe.fileHandleForReading.availableData, encoding: .utf8) ?? ""
-        log("simctl exited with status \(process.terminationStatus)" +
-            (simctlStderr.isEmpty ? "" : ", stderr: \(simctlStderr)"))
-
         guard process.terminationStatus == 0 else {
             throw CaptureError.simctlFailed(exitCode: process.terminationStatus)
         }
 
         let pngData = try Data(contentsOf: URL(fileURLWithPath: tempPath))
-        log("PNG loaded: \(pngData.count) bytes")
 
         // Load PNG as CGImage for dimensions + JPEG re-encoding
         guard let imageSource = CGImageSourceCreateWithData(pngData as CFData, nil),
@@ -64,15 +56,12 @@ public enum ScreenCapture {
         // Downscale from device pixels to iOS points
         let targetWidth = Int(round(Double(cgImage.width) / Double(screenScale)))
         let targetHeight = Int(round(Double(cgImage.height) / Double(screenScale)))
-        log("CGImage: \(cgImage.width)x\(cgImage.height), resizing to \(targetWidth)x\(targetHeight) (scale \(screenScale))...")
         guard let resized = resizeImage(cgImage, width: targetWidth, height: targetHeight) else {
             throw CaptureError.jpegEncodingFailed
         }
 
         let jpegData = try encodeJPEG(image: resized, quality: 0.8)
-        log("JPEG encoded: \(jpegData.count) bytes, encoding base64...")
         let base64 = jpegData.base64EncodedString()
-        log("Base64 encoded: \(base64.count) chars, done")
 
         return (base64: base64, width: targetWidth, height: targetHeight)
     }

@@ -108,8 +108,8 @@ func ensureAbsolutePath(_ filePath: String) -> String {
 // MARK: - Simulator cache
 
 /// Caches device info, AXP accessibility bridge, and HID clients.
-/// Device info (UDID + name) is cached for 60s. The AXPAccessibilityBridge
-/// is cached per UDID (it holds a SimDevice reference).
+/// Device info (UDID + name) is cached both in-memory (for MCP server mode)
+/// and on disk at /tmp (for CLI mode, where each invocation is a fresh process).
 actor SimulatorCache {
     static let shared = SimulatorCache()
 
@@ -123,13 +123,15 @@ actor SimulatorCache {
     private var axpBridges: [String: AXPAccessibilityBridge] = [:]
     private var hidClients: [String: IndigoHIDClient] = [:]
 
-    private let deviceTTL: Duration = .seconds(60)
+    private let deviceTTL: Duration = .seconds(30)
 
-    /// Resolves device UDID, using cache when possible.
-    /// Delegates to SimCtlClient.resolveDeviceID which checks:
+    // MARK: - Filesystem device cache
+
+    /// Resolves device UDID, checking (in order):
     /// 1. Explicit udid parameter
-    /// 2. Default device by name (from VCS root)
-    /// 3. First booted simulator
+    /// 2. In-memory cache (for MCP server mode)
+    /// 3. Filesystem cache at /tmp (for CLI mode)
+    /// 4. Fresh `simctl list devices -j` call
     func resolveDeviceID(_ udid: String?) async throws -> String {
         if let udid = udid { return udid }
 
@@ -139,10 +141,55 @@ actor SimulatorCache {
             return cached.udid
         }
 
-        let resolvedUdid = try await SimCtlClient.resolveDeviceID(nil)
-        let name = try await SimCtlClient.getDeviceName(udid: resolvedUdid)
-        deviceCache = DeviceCache(udid: resolvedUdid, name: name, timestamp: now)
-        return resolvedUdid
+        // Try filesystem cache (survives across CLI invocations)
+        if let fsDevice = Self.readDeviceCacheFromDisk() {
+            deviceCache = DeviceCache(udid: fsDevice.udid, name: fsDevice.name, timestamp: now)
+            return fsDevice.udid
+        }
+
+        let device = try await SimCtlClient.resolveDevice(nil)
+        deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
+        Self.writeDeviceCacheToDisk(udid: device.udid, name: device.name)
+        return device.udid
+    }
+
+    /// Cache file path, keyed by the default device name so different projects
+    /// don't collide if they target different simulators.
+    private static var diskCachePath: String {
+        let key = SimCtlClient.defaultDeviceName ?? "default"
+        return "/tmp/ios-sim-mcp-device-\(key).json"
+    }
+
+    private static let diskCacheTTL: TimeInterval = 30
+
+    private struct DiskDeviceCache: Codable {
+        let udid: String
+        let name: String?
+    }
+
+    private static func readDeviceCacheFromDisk() -> DiskDeviceCache? {
+        let path = diskCachePath
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path) else { return nil }
+
+        // Check mtime for TTL
+        guard let attrs = try? fm.attributesOfItem(atPath: path),
+              let mtime = attrs[.modificationDate] as? Date,
+              Date().timeIntervalSince(mtime) < diskCacheTTL else {
+            return nil
+        }
+
+        guard let data = fm.contents(atPath: path),
+              let cached = try? JSONDecoder().decode(DiskDeviceCache.self, from: data) else {
+            return nil
+        }
+        return cached
+    }
+
+    private static func writeDeviceCacheToDisk(udid: String, name: String?) {
+        let cached = DiskDeviceCache(udid: udid, name: name)
+        guard let data = try? JSONEncoder().encode(cached) else { return }
+        FileManager.default.createFile(atPath: diskCachePath, contents: data)
     }
 
     /// Gets or creates an AXPAccessibilityBridge for the given UDID.
@@ -153,6 +200,15 @@ actor SimulatorCache {
         let bridge = try AXPAccessibilityBridge(udid: udid)
         axpBridges[udid] = bridge
         return bridge
+    }
+
+    /// Gets the screen scale for a device without creating a full HID client.
+    /// Uses the cached device from PrivateFrameworkBridge.lookUpDevice.
+    func getScreenScale(udid: String) throws -> Float {
+        let bridge = PrivateFrameworkBridge.shared
+        try bridge.ensureLoaded()
+        let device = try bridge.lookUpDevice(udid: udid)
+        return bridge.screenScale(forDevice: device)
     }
 
     /// Gets or creates an IndigoHIDClient for the given UDID.
@@ -581,16 +637,12 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
 }
 
 func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    fputs("[ui_view] Resolving UDID...\n", stderr)
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    fputs("[ui_view] UDID resolved: \(udid), capturing screenshot...\n", stderr)
 
     // Get screen scale to downscale screenshot from device pixels to iOS points
-    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
-    let screenScale = hidClient.screenScale
+    let screenScale = try await SimulatorCache.shared.getScreenScale(udid: udid)
 
     let capture = try ScreenCapture.captureSimulator(udid: udid, screenScale: screenScale)
-    fputs("[ui_view] Screenshot captured (\(capture.width)x\(capture.height) at scale \(screenScale)), returning response...\n", stderr)
 
     return .init(content: [
         .image(data: capture.base64, mimeType: "image/jpeg", metadata: nil),
