@@ -93,13 +93,16 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
         FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
 
-        // Transform frames from macOS window coords to iOS points
+        // Transform frames from macOS window coords to iOS points.
+        // The AX root frame (e.g. 320x480) has a different aspect ratio than the iOS
+        // screen (e.g. 402x874) because the macOS window letterboxes the content.
+        // Use uniform scaling (based on width) + vertical centering offset.
         if let rootFrame = result.first?.frame,
            rootFrame.width > 0, rootFrame.height > 0 {
-            let xScale = Double(iosPointSize.width) / rootFrame.width
-            let yScale = Double(iosPointSize.height) / rootFrame.height
-            FileHandle.standardError.write(Data("[ios-simulator-mcp] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (scale \(String(format: "%.3f", xScale))x\(String(format: "%.3f", yScale)))\n".utf8))
-            return result.map { transformFrames($0, xScale: xScale, yScale: yScale, originX: rootFrame.x, originY: rootFrame.y) }
+            let uniformScale = Double(iosPointSize.width) / rootFrame.width
+            let yOffset = (Double(iosPointSize.height) - rootFrame.height * uniformScale) / 2
+            FileHandle.standardError.write(Data("[ios-simulator-mcp] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))\n".utf8))
+            return result.map { transformFrames($0, uniformScale: uniformScale, yOffset: yOffset, originX: rootFrame.x, originY: rootFrame.y) }
         }
         return result
     }
@@ -145,11 +148,11 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
         FileHandle.standardError.write(Data("[ios-simulator-mcp] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
 
-        // Transform frames from macOS window coords to iOS points
+        // Transform frames from macOS window coords to iOS points (uniform scale + centering)
         if let rf = rootFrame, rf.width > 0, rf.height > 0 {
-            let xScale = Double(iosPointSize.width) / Double(rf.width)
-            let yScale = Double(iosPointSize.height) / Double(rf.height)
-            result = transformFrames(result, xScale: xScale, yScale: yScale, originX: Double(rf.origin.x), originY: Double(rf.origin.y))
+            let uniformScale = Double(iosPointSize.width) / Double(rf.width)
+            let yOffset = (Double(iosPointSize.height) - Double(rf.height) * uniformScale) / 2
+            result = transformFrames(result, uniformScale: uniformScale, yOffset: yOffset, originX: Double(rf.origin.x), originY: Double(rf.origin.y))
         }
         return result
     }
@@ -184,14 +187,16 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     }
 
     /// Recursively transforms all frames in a TreeNode from macOS window coords to iOS points.
-    private func transformFrames(_ node: TreeNode, xScale: Double, yScale: Double, originX: Double, originY: Double) -> TreeNode {
+    /// Uses uniform scaling (same factor for X and Y) plus a vertical centering offset,
+    /// because the macOS window letterboxes the iOS content vertically.
+    private func transformFrames(_ node: TreeNode, uniformScale: Double, yOffset: Double, originX: Double, originY: Double) -> TreeNode {
         let newFrame: TreeNode.FrameInfo?
         if let f = node.frame {
             newFrame = TreeNode.FrameInfo(
-                x: ((f.x - originX) * xScale * 100).rounded() / 100,
-                y: ((f.y - originY) * yScale * 100).rounded() / 100,
-                width: (f.width * xScale * 100).rounded() / 100,
-                height: (f.height * yScale * 100).rounded() / 100
+                x: ((f.x - originX) * uniformScale * 100).rounded() / 100,
+                y: (((f.y - originY) * uniformScale + yOffset) * 100).rounded() / 100,
+                width: (f.width * uniformScale * 100).rounded() / 100,
+                height: (f.height * uniformScale * 100).rounded() / 100
             )
         } else {
             newFrame = nil
@@ -205,7 +210,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             hint: node.hint,
             traits: node.traits,
             frame: newFrame,
-            children: node.children.map { transformFrames($0, xScale: xScale, yScale: yScale, originX: originX, originY: originY) }
+            children: node.children.map { transformFrames($0, uniformScale: uniformScale, yOffset: yOffset, originX: originX, originY: originY) }
         )
     }
 
