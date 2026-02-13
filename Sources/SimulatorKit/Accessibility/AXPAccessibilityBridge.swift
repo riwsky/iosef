@@ -35,10 +35,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         super.init()
 
-        // Set the translator's bridgeTokenDelegate to our dispatcher
+        // Set the translator's bridgeTokenDelegate to our dispatcher.
+        // Note: idb does NOT set supportsDelegateTokens; the framework infers
+        // token-based delegation from the presence of bridgeTokenDelegate.
         (translator as AnyObject).setValue(del, forKey: "bridgeTokenDelegate")
-        // Enable tokenized delegation
-        (translator as AnyObject).setValue(true, forKey: "supportsDelegateTokens")
     }
 
     // MARK: - Public API
@@ -213,11 +213,15 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             traits = nil
         }
 
+        // Ensure this element's translation has the token set before accessing children.
+        // AXPMacPlatformElement lazily resolves children via XPC using the token.
+        if let trans = (element as AnyObject).value(forKey: "translation") as AnyObject? {
+            trans.setValue(token, forKey: "bridgeDelegateToken")
+        }
+
         // Children
         var childNodes: [TreeNode] = []
-        let childrenSel = NSSelectorFromString("accessibilityChildren")
-        if element.responds(to: childrenSel),
-           let children = element.perform(childrenSel)?.takeUnretainedValue() as? [AnyObject] {
+        if let children = (element as AnyObject).value(forKey: "accessibilityChildren") as? [AnyObject], !children.isEmpty {
             for child in children {
                 try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
                 // Set bridgeDelegateToken on each child's translation
@@ -345,7 +349,6 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
 
         let callback: @convention(block) (AnyObject) -> AnyObject = { [weak self] (request: AnyObject) -> AnyObject in
             guard let self = self, let dev = device else {
-                FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC callback: no device for token, returning empty\n".utf8))
                 return Self.emptyAXPResponse()
             }
 
@@ -356,7 +359,6 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
                 let remaining = deadline - now
                 let remainingSecs = Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18
                 if remainingSecs <= 0 {
-                    FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC callback: deadline already passed, returning empty\n".utf8))
                     return Self.emptyAXPResponse()
                 }
                 xpcTimeout = min(remainingSecs, 10.0)
@@ -364,17 +366,10 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
                 xpcTimeout = 10.0
             }
 
-            let start = CFAbsoluteTimeGetCurrent()
             do {
-                let response = try self.bridge.sendAccessibilityRequest(request, toDevice: dev, timeoutSeconds: xpcTimeout)
-                let elapsed = CFAbsoluteTimeGetCurrent() - start
-                if elapsed > 1.0 {
-                    FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC call slow: \(Int(elapsed * 1000))ms\n".utf8))
-                }
-                return response
+                return try self.bridge.sendAccessibilityRequest(request, toDevice: dev, timeoutSeconds: xpcTimeout)
             } catch {
-                let elapsed = CFAbsoluteTimeGetCurrent() - start
-                FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC call failed after \(Int(elapsed * 1000))ms: \(error.localizedDescription)\n".utf8))
+                FileHandle.standardError.write(Data("[ios-simulator-mcp] XPC call failed: \(error.localizedDescription)\n".utf8))
                 return Self.emptyAXPResponse()
             }
         }

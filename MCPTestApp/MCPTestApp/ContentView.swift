@@ -21,7 +21,6 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
         }
-        .accessibilityLabel("MCP Test Playground")
         .accessibilityIdentifier("root_view")
     }
 }
