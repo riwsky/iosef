@@ -791,12 +791,49 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
 struct SimulatorCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ios_simulator_cli",
-        abstract: "iOS Simulator CLI — interact with iOS Simulator via accessibility, HID input, and screenshots.",
+        abstract: "Control iOS Simulator — tap, type, swipe, inspect, and screenshot.",
         discussion: """
-            Available commands let you tap, type, swipe, inspect accessibility elements, \
-            and capture screenshots. Coordinates are in iOS points. Run 'ui_describe_all' \
-            to discover element positions, 'ui_view' to see the screen. Also supports MCP \
-            server mode via the 'mcp' subcommand.
+            Tap, type, swipe, inspect accessibility elements, and capture screenshots \
+            in iOS Simulator. Runs as a standalone CLI or as an MCP server (stdio \
+            transport) for agent integration.
+
+            Coordinates:
+              All commands use iOS points. The accessibility tree reports positions as
+              (center±half-size) — the center value is the tap target. Screenshots are
+              coordinate-aligned: 1 pixel = 1 iOS point.
+
+            Device Resolution:
+              When --udid is omitted, the CLI auto-detects the booted simulator. If
+              multiple simulators are booted, pass --udid explicitly. The IDB_UDID
+              environment variable is also respected as a fallback.
+
+            Environment Variables:
+              IDB_UDID                                  Fallback simulator UDID.
+              IOS_SIMULATOR_MCP_DEFAULT_DEVICE_NAME     Override auto-detected device name.
+              IOS_SIMULATOR_MCP_DEFAULT_OUTPUT_DIR      Default directory for screenshots.
+              IOS_SIMULATOR_MCP_TIMEOUT                 Override default timeout (seconds).
+              IOS_SIMULATOR_MCP_FILTERED_TOOLS          Comma-separated tools to hide from MCP.
+
+            Example:
+              # See which simulator is booted
+              ios_simulator_cli get_booted_sim_id
+
+              # Inspect the UI
+              ios_simulator_cli ui_describe_all
+
+              # Tap a button discovered at (195, 420)
+              ios_simulator_cli ui_tap --x 195 --y 420
+
+              # Type into the now-focused text field
+              ios_simulator_cli ui_type --text "hello world"
+
+              # Take a screenshot
+              ios_simulator_cli ui_view --output /tmp/screen.png
+
+              # Swipe up to scroll
+              ios_simulator_cli ui_swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
+
+              See 'ios_simulator_cli help <subcommand>' for detailed help.
             """,
         version: serverVersion,
         subcommands: [
