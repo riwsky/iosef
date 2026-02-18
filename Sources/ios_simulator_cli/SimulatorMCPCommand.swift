@@ -85,6 +85,59 @@ let udidSchema: Value = .object([
     "pattern": .string(#"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"#),
 ])
 
+// MARK: - Selector schema (reused across selector-based tools)
+
+let selectorProperties: [String: Value] = [
+    "role": .object(["type": .string("string"), "description": .string("Case-insensitive exact match on accessibility role (e.g. AXButton, AXStaticText)")]),
+    "name": .object(["type": .string("string"), "description": .string("Case-insensitive substring match on label or title")]),
+    "identifier": .object(["type": .string("string"), "description": .string("Exact match on accessibilityIdentifier")]),
+]
+
+/// Extracts an AXSelector from MCP tool params. Throws if all selector fields are empty.
+func extractSelector(from arguments: [String: Value]?) throws -> AXSelector {
+    let selector = AXSelector(
+        role: arguments?["role"]?.stringValue,
+        name: arguments?["name"]?.stringValue,
+        identifier: arguments?["identifier"]?.stringValue
+    )
+    guard !selector.isEmpty else {
+        throw SelectorError.emptySelector
+    }
+    return selector
+}
+
+/// Resolves a selector against the AX tree for a given UDID.
+/// Returns the selector, the full tree, and the matching nodes.
+func resolveSelector(from params: CallTool.Parameters) async throws -> (selector: AXSelector, matches: [TreeNode]) {
+    let selector = try extractSelector(from: params.arguments)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
+
+    let nodes = try await withTimeout("selector_query", .seconds(12)) {
+        try axpBridge.accessibilityElements()
+    }
+    let matches = findNodes(matching: selector, in: nodes)
+    return (selector, matches)
+}
+
+enum SelectorError: Error, LocalizedError {
+    case emptySelector
+    case noMatch(AXSelector)
+
+    var errorDescription: String? {
+        switch self {
+        case .emptySelector:
+            return "At least one selector field (role, name, identifier) must be provided"
+        case .noMatch(let sel):
+            var parts: [String] = []
+            if let r = sel.role { parts.append("role=\(r)") }
+            if let n = sel.name { parts.append("name=\(n)") }
+            if let id = sel.identifier { parts.append("identifier=\(id)") }
+            return "No element found matching: \(parts.joined(separator: ", "))"
+        }
+    }
+}
+
 // MARK: - Path helpers
 
 func ensureAbsolutePath(_ filePath: String) -> String {
@@ -278,6 +331,7 @@ func allTools() -> [Tool] {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
+                    "depth": .object(["type": .string("integer"), "description": .string("Maximum tree depth to return (omit for full tree). 0 = root only, 1 = root + direct children, etc.")]),
                     "udid": udidSchema,
                 ]),
             ])
@@ -433,6 +487,105 @@ func allTools() -> [Tool] {
         ))
     }
 
+    // MARK: - Selector-based tools
+
+    let selectorSchema: [String: Value] = selectorProperties.merging(["udid": udidSchema]) { a, _ in a }
+
+    if !isFiltered("find") {
+        tools.append(Tool(
+            name: "find",
+            description: "Search the accessibility tree by selector (role, name, identifier). Returns matching nodes as an indented text tree.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(selectorSchema),
+            ])
+        ))
+    }
+
+    if !isFiltered("exists") {
+        tools.append(Tool(
+            name: "exists",
+            description: "Check if an accessibility element matching the selector exists. Returns \"true\" or \"false\".",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(selectorSchema),
+            ])
+        ))
+    }
+
+    if !isFiltered("count") {
+        tools.append(Tool(
+            name: "count",
+            description: "Count accessibility elements matching the selector.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(selectorSchema),
+            ])
+        ))
+    }
+
+    if !isFiltered("text") {
+        tools.append(Tool(
+            name: "text",
+            description: "Extract the text content (value, label, or title) of the first element matching the selector.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(selectorSchema),
+            ])
+        ))
+    }
+
+    if !isFiltered("tap_element") {
+        var tapElSchema = selectorSchema
+        tapElSchema["duration"] = .object([
+            "type": .string("string"),
+            "description": .string("Press duration for long-press (in seconds)"),
+            "pattern": .string(#"^\d+(\.\d+)?$"#),
+        ])
+        tools.append(Tool(
+            name: "tap_element",
+            description: "Find an accessibility element by selector and tap its center. Combines find + tap into one step.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(tapElSchema),
+            ])
+        ))
+    }
+
+    if !isFiltered("input") {
+        var inputSchema = selectorSchema
+        inputSchema["text"] = .object([
+            "type": .string("string"),
+            "description": .string("Text to type after tapping the element"),
+            "maxLength": .int(500),
+        ])
+        tools.append(Tool(
+            name: "input",
+            description: "Find an element by selector, tap it to focus, then type text. Combines find + tap + type into one step.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(inputSchema),
+                "required": .array([.string("text")]),
+            ])
+        ))
+    }
+
+    if !isFiltered("wait") {
+        var waitSchema = selectorSchema
+        waitSchema["timeout"] = .object([
+            "type": .string("number"),
+            "description": .string("Maximum seconds to wait (default 10)"),
+        ])
+        tools.append(Tool(
+            name: "wait",
+            description: "Poll the accessibility tree until an element matching the selector appears. Returns the matched element on success, or an error on timeout.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(waitSchema),
+            ])
+        ))
+    }
+
     return tools
 }
 
@@ -461,6 +614,20 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleInstallApp(params)
         case "launch_app":
             return try await handleLaunchApp(params)
+        case "find":
+            return try await handleFind(params)
+        case "exists":
+            return try await handleExists(params)
+        case "count":
+            return try await handleCount(params)
+        case "text":
+            return try await handleText(params)
+        case "tap_element":
+            return try await handleTapElement(params)
+        case "input":
+            return try await handleInput(params)
+        case "wait":
+            return try await handleWait(params)
         default:
             return .init(content: [.text("Unknown tool: \(params.name)")], isError: true)
         }
@@ -484,10 +651,11 @@ func handleOpenSimulator() async throws -> CallTool.Result {
 func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
+    let depth = params.arguments?["depth"].flatMap({ Int($0, strict: false) })
 
     let markdown = try await withTimeout("describe_all", .seconds(12)) {
         let nodes = try axpBridge.accessibilityElements()
-        return TreeSerializer.toMarkdown(nodes)
+        return TreeSerializer.toMarkdown(nodes, maxDepth: depth)
     }
     return .init(content: [.text(markdown)])
 }
@@ -634,6 +802,103 @@ func handleLaunchApp(_ params: CallTool.Parameters) async throws -> CallTool.Res
     return .init(content: [.text("App \(bundleID) launched successfully with PID: \(pid)")])
 }
 
+// MARK: - Selector-based tool implementations
+
+func handleFind(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let (_, matches) = try await resolveSelector(from: params)
+    if matches.isEmpty {
+        return .init(content: [.text("No matching elements found")])
+    }
+    return .init(content: [.text(TreeSerializer.toMarkdown(matches))])
+}
+
+func handleExists(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let (_, matches) = try await resolveSelector(from: params)
+    return .init(content: [.text(matches.isEmpty ? "false" : "true")])
+}
+
+func handleCount(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let (_, matches) = try await resolveSelector(from: params)
+    return .init(content: [.text("\(matches.count)")])
+}
+
+func handleText(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let (selector, matches) = try await resolveSelector(from: params)
+    guard let first = matches.first else {
+        throw SelectorError.noMatch(selector)
+    }
+    let text = first.value ?? first.label ?? first.title ?? ""
+    return .init(content: [.text(text)])
+}
+
+func handleTapElement(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let (selector, matches) = try await resolveSelector(from: params)
+    guard let first = matches.first else {
+        throw SelectorError.noMatch(selector)
+    }
+    guard let frame = first.frame else {
+        throw SelectorError.noMatch(selector)
+    }
+
+    let center = frame.center
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+
+    if let duration = extractDouble(params.arguments?["duration"]) {
+        hidClient.longPress(x: center.x, y: center.y, duration: duration)
+    } else {
+        hidClient.tap(x: center.x, y: center.y)
+    }
+
+    return .init(content: [.text("Tapped element at (\(Int(center.x)), \(Int(center.y)))")])
+}
+
+func handleInput(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    guard let text = params.arguments?["text"]?.stringValue else {
+        return .init(content: [.text("Missing required parameter: text")], isError: true)
+    }
+
+    let (selector, matches) = try await resolveSelector(from: params)
+    guard let first = matches.first else {
+        throw SelectorError.noMatch(selector)
+    }
+    guard let frame = first.frame else {
+        throw SelectorError.noMatch(selector)
+    }
+
+    let center = frame.center
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+
+    hidClient.tap(x: center.x, y: center.y)
+    usleep(100_000) // 100ms delay for keyboard to appear
+    hidClient.typeText(text)
+
+    return .init(content: [.text("Tapped (\(Int(center.x)), \(Int(center.y))) and typed \"\(text)\"")])
+}
+
+func handleWait(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let selector = try extractSelector(from: params.arguments)
+    let timeoutSecs = extractDouble(params.arguments?["timeout"]) ?? 10.0
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
+
+    let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int64(timeoutSecs * 1000)))
+
+    while ContinuousClock.now < deadline {
+        let nodes = try await withTimeout("wait_poll", .seconds(5)) {
+            try axpBridge.accessibilityElements()
+        }
+        let matches = findNodes(matching: selector, in: nodes)
+        if let first = matches.first {
+            return .init(content: [.text(TreeSerializer.toMarkdown(first))])
+        }
+        try await Task.sleep(for: .milliseconds(250))
+    }
+
+    throw SelectorError.noMatch(selector)
+}
+
 // MARK: - Default device name from VCS root
 
 /// Run a command and return trimmed stdout, or nil on failure. Times out after `timeout` (default 5s).
@@ -715,6 +980,27 @@ struct CommonOptions: ParsableArguments {
 
     @Option(name: .long, help: "Simulator UDID (auto-detected if omitted)")
     var udid: String? = nil
+}
+
+// MARK: - Selector CLI options
+
+struct SelectorOptions: ParsableArguments {
+    @Option(name: .long, help: "Match accessibility role (e.g. AXButton)")
+    var role: String? = nil
+
+    @Option(name: .long, help: "Match label or title (substring, case-insensitive)")
+    var name: String? = nil
+
+    @Option(name: .long, help: "Match accessibilityIdentifier (exact)")
+    var identifier: String? = nil
+
+    func toArguments() -> [String: Value] {
+        var args: [String: Value] = [:]
+        if let role { args["role"] = .string(role) }
+        if let name { args["name"] = .string(name) }
+        if let identifier { args["identifier"] = .string(identifier) }
+        return args
+    }
 }
 
 // MARK: - Shared CLI output helper
@@ -848,6 +1134,13 @@ struct SimulatorCLI: AsyncParsableCommand {
             UIView.self,
             InstallApp.self,
             LaunchApp.self,
+            Find.self,
+            Exists.self,
+            Count.self,
+            Text.self,
+            TapElement.self,
+            Input.self,
+            Wait.self,
         ]
     )
 }
@@ -985,21 +1278,26 @@ struct UIDescribeAll: AsyncParsableCommand {
 
             Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
-            Use --json for machine-readable output. Combine with jq to filter:
+            Use --depth to limit tree depth (0 = root only). Use --json for machine-readable \
+            output. Combine with jq to filter:
 
             Examples:
               ios_simulator_cli describe_all
+              ios_simulator_cli describe_all --depth 2
               ios_simulator_cli describe_all --json
               ios_simulator_cli describe_all --json | jq '.. | objects | select(.role == "button")'
-              ios_simulator_cli describe_all --json | jq '.. | objects | select(.label? // "" | test("Sign"))'
             """
     )
 
     @OptionGroup var common: CommonOptions
 
+    @Option(name: .long, help: "Maximum tree depth (omit for full tree)")
+    var depth: Int?
+
     func run() async throws {
         var args: [String: Value] = [:]
         if let udid = common.udid { args["udid"] = .string(udid) }
+        if let depth { args["depth"] = .int(depth) }
         try await runToolCLI(toolName: "describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1240,5 +1538,195 @@ struct LaunchApp: AsyncParsableCommand {
         if terminateRunning { args["terminate_running"] = .bool(true) }
         if let udid = common.udid { args["udid"] = .string(udid) }
         try await runToolCLI(toolName: "launch_app", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+// MARK: - Selector-based CLI subcommands
+
+struct Find: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "find",
+        abstract: "Find accessibility elements by selector.",
+        discussion: """
+            Searches the accessibility tree for elements matching the given criteria. \
+            At least one of --role, --name, or --identifier must be provided. \
+            Multiple criteria are combined with AND logic.
+
+            Examples:
+              ios_simulator_cli find --role AXButton
+              ios_simulator_cli find --name "Sign In"
+              ios_simulator_cli find --role AXStaticText --name "count"
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
+
+    func run() async throws {
+        var args = selector.toArguments()
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "find", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+struct Exists: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "exists",
+        abstract: "Check if a matching element exists.",
+        discussion: """
+            Returns "true" if at least one element matches the selector, "false" otherwise. \
+            Useful for conditional logic in scripts.
+
+            Examples:
+              ios_simulator_cli exists --name "Sign In"
+              ios_simulator_cli exists --role AXButton --name "Submit"
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
+
+    func run() async throws {
+        var args = selector.toArguments()
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "exists", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+struct Count: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "count",
+        abstract: "Count matching accessibility elements.",
+        discussion: """
+            Returns the number of elements matching the selector.
+
+            Examples:
+              ios_simulator_cli count --role AXButton
+              ios_simulator_cli count --name "Row"
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
+
+    func run() async throws {
+        var args = selector.toArguments()
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "count", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+struct Text: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "text",
+        abstract: "Extract text from the first matching element.",
+        discussion: """
+            Returns the text content of the first element matching the selector. \
+            Checks value, then label, then title. Errors if no element matches.
+
+            Examples:
+              ios_simulator_cli text --name "Tap count"
+              ios_simulator_cli text --role AXStaticText --name "score"
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
+
+    func run() async throws {
+        var args = selector.toArguments()
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "text", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+struct TapElement: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "tap_element",
+        abstract: "Find an element by selector and tap it.",
+        discussion: """
+            Searches the accessibility tree for the first matching element and taps \
+            its center. Combines find + tap into one step. Errors if no match.
+
+            For long-press, pass --duration (in seconds).
+
+            Examples:
+              ios_simulator_cli tap_element --name "Sign In"
+              ios_simulator_cli tap_element --role AXButton --name "Submit"
+              ios_simulator_cli tap_element --name "Menu" --duration 0.5
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
+
+    @Option(name: .long, help: "Press duration in seconds (for long-press)")
+    var duration: Double?
+
+    func run() async throws {
+        var args = selector.toArguments()
+        if let duration { args["duration"] = .double(duration) }
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "tap_element", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+struct Input: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "input",
+        abstract: "Find an element, tap it, then type text.",
+        discussion: """
+            Searches for an element by selector, taps its center to focus, \
+            waits briefly for the keyboard, then types the given text. \
+            Combines find + tap + type into one step.
+
+            Examples:
+              ios_simulator_cli input --role AXTextField --text "hello"
+              ios_simulator_cli input --name "Search" --text "query"
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
+
+    @Option(name: .long, help: "Text to type after tapping the element")
+    var text: String
+
+    func run() async throws {
+        var args = selector.toArguments()
+        args["text"] = .string(text)
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "input", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+struct Wait: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "wait",
+        abstract: "Wait for an element matching the selector to appear.",
+        discussion: """
+            Polls the accessibility tree until a matching element appears \
+            or the timeout expires. Default timeout is 10 seconds.
+
+            Returns the matched element on success, or exits with an error \
+            on timeout.
+
+            Examples:
+              ios_simulator_cli wait --name "Welcome"
+              ios_simulator_cli wait --role AXButton --name "Continue" --timeout 5
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
+
+    @Option(name: .long, help: "Maximum seconds to wait (default 10)")
+    var timeout: Double?
+
+    func run() async throws {
+        var args = selector.toArguments()
+        if let timeout { args["timeout"] = .double(timeout) }
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        try await runToolCLI(toolName: "wait", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }

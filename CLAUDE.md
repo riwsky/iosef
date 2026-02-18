@@ -18,4 +18,8 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 
 *Multiple simulators:* Multiple simulators are often booted. The test app targets a simulator named after the repo dir (`ios-simulator-mcp-swift`). When running smoke tests or CLI commands, pass `--udid` explicitly. UDID: `xcrun simctl list devices | grep "ios-simulator-mcp-swift"`.
 
+*Selector commands:* `find`, `exists`, `count`, `text`, `tap_element`, `input`, `wait` — search/interact by `--role`, `--name`, `--identifier`. `describe_all --depth N` limits tree depth. These compose with AND logic.
+
+*Demos:* Use `showboat` to create executable demo documents in `demos/`. Build incrementally with `showboat init`, `note`, `exec`, `image`. Verify with `showboat verify`. See existing demos for format. Always `showboat verify` before considering a demo complete.
+
 *Validation:* Use the `mcp-playground-validate` skill to run smoke tests after code changes. Quick: `~/build/tools/skills/mcp-playground-validate/scripts/smoke_test.py --udid <UDID> -v`. Tests tap, swipe, screenshot, text input, AX tree, and coordinate alignment against MCPTestApp.

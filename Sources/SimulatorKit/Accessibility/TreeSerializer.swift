@@ -67,6 +67,11 @@ public struct TreeNode: Codable, Sendable {
             self.width = width
             self.height = height
         }
+
+        /// Center point of the frame (the tap target).
+        public var center: (x: Double, y: Double) {
+            (x + width / 2, y + height / 2)
+        }
     }
 }
 
@@ -105,22 +110,24 @@ public enum TreeSerializer {
     ]
 
     /// Serializes a tree node array to an indented plain-text tree optimized for LLM agents.
-    public static func toMarkdown(_ nodes: [TreeNode]) -> String {
+    /// - Parameter maxDepth: Maximum recursion depth (nil for unlimited). Depth 0 = root nodes only.
+    public static func toMarkdown(_ nodes: [TreeNode], maxDepth: Int? = nil) -> String {
         var lines: [String] = []
         for node in nodes {
-            appendMarkdown(node: node, indent: 0, lines: &lines)
+            appendMarkdown(node: node, indent: 0, depth: 0, maxDepth: maxDepth, lines: &lines)
         }
         return lines.joined(separator: "\n")
     }
 
     /// Serializes a single tree node to an indented plain-text tree.
-    public static func toMarkdown(_ node: TreeNode) -> String {
+    /// - Parameter maxDepth: Maximum recursion depth (nil for unlimited). Depth 0 = this node only.
+    public static func toMarkdown(_ node: TreeNode, maxDepth: Int? = nil) -> String {
         var lines: [String] = []
-        appendMarkdown(node: node, indent: 0, lines: &lines)
+        appendMarkdown(node: node, indent: 0, depth: 0, maxDepth: maxDepth, lines: &lines)
         return lines.joined(separator: "\n")
     }
 
-    private static func appendMarkdown(node: TreeNode, indent: Int, lines: inout [String]) {
+    private static func appendMarkdown(node: TreeNode, indent: Int, depth: Int, maxDepth: Int?, lines: inout [String]) {
         let role = node.role ?? ""
         let name = node.label.flatMap({ $0.isEmpty ? nil : $0 })
             ?? node.title.flatMap({ $0.isEmpty ? nil : $0 })
@@ -169,8 +176,9 @@ public enum TreeSerializer {
         }
 
         let childIndent = hasContent ? indent + 1 : indent
+        if let max = maxDepth, depth >= max { return }
         for child in node.children {
-            appendMarkdown(node: child, indent: childIndent, lines: &lines)
+            appendMarkdown(node: child, indent: childIndent, depth: depth + 1, maxDepth: maxDepth, lines: &lines)
         }
     }
 
