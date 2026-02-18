@@ -271,9 +271,9 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("ui_describe_all") {
+    if !isFiltered("describe_all") {
         tools.append(Tool(
-            name: "ui_describe_all",
+            name: "describe_all",
             description: "Describes accessibility information for the entire screen in the iOS Simulator. Coordinates are (center±half-size) in iOS points — the center value is the tap target.",
             inputSchema: .object([
                 "type": .string("object"),
@@ -284,9 +284,9 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("ui_describe_point") {
+    if !isFiltered("describe_point") {
         tools.append(Tool(
-            name: "ui_describe_point",
+            name: "describe_point",
             description: "Returns the accessibility element at given co-ordinates on the iOS Simulator's screen",
             inputSchema: .object([
                 "type": .string("object"),
@@ -300,9 +300,9 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("ui_tap") {
+    if !isFiltered("tap") {
         tools.append(Tool(
-            name: "ui_tap",
+            name: "tap",
             description: "Tap on the screen in the iOS Simulator",
             inputSchema: .object([
                 "type": .string("object"),
@@ -321,9 +321,9 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("ui_type") {
+    if !isFiltered("type") {
         tools.append(Tool(
-            name: "ui_type",
+            name: "type",
             description: "Input text into the iOS Simulator",
             inputSchema: .object([
                 "type": .string("object"),
@@ -341,9 +341,9 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("ui_swipe") {
+    if !isFiltered("swipe") {
         tools.append(Tool(
-            name: "ui_swipe",
+            name: "swipe",
             description: "Swipe on the screen in the iOS Simulator",
             inputSchema: .object([
                 "type": .string("object"),
@@ -368,9 +368,9 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("ui_view") {
+    if !isFiltered("view") {
         tools.append(Tool(
-            name: "ui_view",
+            name: "view",
             description: "Get the image content of a compressed screenshot of the current simulator view",
             inputSchema: .object([
                 "type": .string("object"),
@@ -445,17 +445,17 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleGetBootedSimID()
         case "open_simulator":
             return try await handleOpenSimulator()
-        case "ui_describe_all":
+        case "describe_all":
             return try await handleUIDescribeAll(params)
-        case "ui_describe_point":
+        case "describe_point":
             return try await handleUIDescribePoint(params)
-        case "ui_tap":
+        case "tap":
             return try await handleUITap(params)
-        case "ui_type":
+        case "type":
             return try await handleUIType(params)
-        case "ui_swipe":
+        case "swipe":
             return try await handleUISwipe(params)
-        case "ui_view":
+        case "view":
             return try await handleUIView(params)
         case "install_app":
             return try await handleInstallApp(params)
@@ -819,19 +819,19 @@ struct SimulatorCLI: AsyncParsableCommand {
               ios_simulator_cli get_booted_sim_id
 
               # Inspect the UI
-              ios_simulator_cli ui_describe_all
+              ios_simulator_cli describe_all
 
               # Tap a button discovered at (195, 420)
-              ios_simulator_cli ui_tap --x 195 --y 420
+              ios_simulator_cli tap --x 195 --y 420
 
               # Type into the now-focused text field
-              ios_simulator_cli ui_type --text "hello world"
+              ios_simulator_cli type --text "hello world"
 
               # Take a screenshot
-              ios_simulator_cli ui_view --output /tmp/screen.png
+              ios_simulator_cli view --output /tmp/screen.png
 
               # Swipe up to scroll
-              ios_simulator_cli ui_swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
+              ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 
               See 'ios_simulator_cli help <subcommand>' for detailed help.
             """,
@@ -976,22 +976,22 @@ struct OpenSimulator: AsyncParsableCommand {
 
 struct UIDescribeAll: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ui_describe_all",
+        commandName: "describe_all",
         abstract: "Dump the full accessibility tree.",
         discussion: """
             Returns an indented text tree of every accessibility element on screen, \
             including roles, labels, frames, and values. Use this to discover element \
-            positions for ui_tap, or to understand the current UI state.
+            positions for tap, or to understand the current UI state.
 
             Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
             Use --json for machine-readable output. Combine with jq to filter:
 
             Examples:
-              ios_simulator_cli ui_describe_all
-              ios_simulator_cli ui_describe_all --json
-              ios_simulator_cli ui_describe_all --json | jq '.. | objects | select(.role == "button")'
-              ios_simulator_cli ui_describe_all --json | jq '.. | objects | select(.label? // "" | test("Sign"))'
+              ios_simulator_cli describe_all
+              ios_simulator_cli describe_all --json
+              ios_simulator_cli describe_all --json | jq '.. | objects | select(.role == "button")'
+              ios_simulator_cli describe_all --json | jq '.. | objects | select(.label? // "" | test("Sign"))'
             """
     )
 
@@ -1000,13 +1000,13 @@ struct UIDescribeAll: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = [:]
         if let udid = common.udid { args["udid"] = .string(udid) }
-        try await runToolCLI(toolName: "ui_describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
 struct UIDescribePoint: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ui_describe_point",
+        commandName: "describe_point",
         abstract: "Get the accessibility element at (x, y).",
         discussion: """
             Returns the accessibility element at the given coordinates. Useful for \
@@ -1015,9 +1015,9 @@ struct UIDescribePoint: AsyncParsableCommand {
             Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
             Examples:
-              ios_simulator_cli ui_describe_point --x 200 --y 400
-              ios_simulator_cli ui_describe_point --x 200 --y 400 --json
-              ios_simulator_cli ui_describe_point --x 200 --y 400 --json | jq '.content[0].text'
+              ios_simulator_cli describe_point --x 200 --y 400
+              ios_simulator_cli describe_point --x 200 --y 400 --json
+              ios_simulator_cli describe_point --x 200 --y 400 --json | jq '.content[0].text'
             """
     )
 
@@ -1032,23 +1032,23 @@ struct UIDescribePoint: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = ["x": .double(x), "y": .double(y)]
         if let udid = common.udid { args["udid"] = .string(udid) }
-        try await runToolCLI(toolName: "ui_describe_point", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "describe_point", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
 struct UITap: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ui_tap",
+        commandName: "tap",
         abstract: "Tap at (x, y) coordinates on the iOS Simulator screen.",
         discussion: """
             Sends a HID touch event directly to the simulator (no simctl overhead). \
-            Coordinates are in iOS points. Use ui_describe_all to find element positions.
+            Coordinates are in iOS points. Use describe_all to find element positions.
 
             For long-press, pass --duration (in seconds).
 
             Examples:
-              ios_simulator_cli ui_tap --x 200 --y 400
-              ios_simulator_cli ui_tap --x 100 --y 300 --duration 0.5
+              ios_simulator_cli tap --x 200 --y 400
+              ios_simulator_cli tap --x 100 --y 300 --duration 0.5
             """
     )
 
@@ -1067,23 +1067,23 @@ struct UITap: AsyncParsableCommand {
         var args: [String: Value] = ["x": .double(x), "y": .double(y)]
         if let duration { args["duration"] = .double(duration) }
         if let udid = common.udid { args["udid"] = .string(udid) }
-        try await runToolCLI(toolName: "ui_tap", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "tap", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
 struct UIType: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ui_type",
+        commandName: "type",
         abstract: "Type text into the focused field.",
         discussion: """
             Sends keyboard HID events to type text into whatever field currently has \
             focus in the simulator. Only printable ASCII characters (0x20-0x7E) are supported.
 
-            Tap a text field first with ui_tap to ensure it has focus.
+            Tap a text field first with tap to ensure it has focus.
 
             Examples:
-              ios_simulator_cli ui_type --text hello
-              ios_simulator_cli ui_type --text "Hello World"
+              ios_simulator_cli type --text hello
+              ios_simulator_cli type --text "Hello World"
             """
     )
 
@@ -1095,13 +1095,13 @@ struct UIType: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = ["text": .string(text)]
         if let udid = common.udid { args["udid"] = .string(udid) }
-        try await runToolCLI(toolName: "ui_type", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "type", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
 struct UISwipe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ui_swipe",
+        commandName: "swipe",
         abstract: "Swipe between two points on the simulator screen.",
         discussion: """
             Sends a multi-step HID touch drag from (x_start, y_start) to (x_end, y_end). \
@@ -1111,8 +1111,8 @@ struct UISwipe: AsyncParsableCommand {
             Use --duration to control speed (in seconds).
 
             Examples:
-              ios_simulator_cli ui_swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
-              ios_simulator_cli ui_swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
+              ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
+              ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
             """
     )
 
@@ -1146,13 +1146,13 @@ struct UISwipe: AsyncParsableCommand {
         if let delta { args["delta"] = .double(delta) }
         if let duration { args["duration"] = .double(duration) }
         if let udid = common.udid { args["udid"] = .string(udid) }
-        try await runToolCLI(toolName: "ui_swipe", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "swipe", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
 
 struct UIView: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ui_view",
+        commandName: "view",
         abstract: "Capture a screenshot of the simulator screen.",
         discussion: """
             In CLI mode, saves the screenshot to a file and prints the path. \
@@ -1160,13 +1160,13 @@ struct UIView: AsyncParsableCommand {
 
             In MCP mode, returns base64 image data unless output_path is provided.
 
-            The screenshot is coordinate-aligned with ui_tap and ui_describe_all — \
+            The screenshot is coordinate-aligned with tap and describe_all — \
             pixels correspond to iOS points.
 
             Examples:
-              ios_simulator_cli ui_view
-              ios_simulator_cli ui_view --output /tmp/screen.jpg
-              ios_simulator_cli ui_view --output /tmp/screen.png --type png
+              ios_simulator_cli view
+              ios_simulator_cli view --output /tmp/screen.jpg
+              ios_simulator_cli view --output /tmp/screen.png --type png
             """
     )
 
@@ -1183,7 +1183,7 @@ struct UIView: AsyncParsableCommand {
         if let output { args["output_path"] = .string(output) }
         if let type { args["type"] = .string(type) }
         if let udid = common.udid { args["udid"] = .string(udid) }
-        try await runToolCLI(toolName: "ui_view", arguments: args, json: common.json, output: output, verbose: common.verbose)
+        try await runToolCLI(toolName: "view", arguments: args, json: common.json, output: output, verbose: common.verbose)
     }
 }
 

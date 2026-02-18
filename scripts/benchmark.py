@@ -24,36 +24,36 @@ BASELINE_WORKSPACE_NAME = "bench-baseline"
 # MCP-level benchmark tools: (tool_name, extra_params_or_None)
 TOOLS: list[tuple[str, dict | None]] = [
     ("get_booted_sim_id", None),
-    ("ui_describe_all", None),
-    ("ui_describe_point", {"x": 165, "y": 269}),
-    ("ui_tap", {"x": 165, "y": 269}),
-    ("ui_view", None),
+    ("describe_all", None),
+    ("describe_point", {"x": 165, "y": 269}),
+    ("tap", {"x": 165, "y": 269}),
+    ("view", None),
 ]
 
 # CLI-level benchmark tools: (display_name, swift_cli_template, baseline_template, baseline_label)
 # Templates use {udid}, {swift_bin}, {idb} placeholders.
 CLI_TOOLS: list[tuple[str, str, str, str]] = [
     (
-        "ui_describe_all",
-        "{swift_bin} ui_describe_all --udid {udid}",
+        "describe_all",
+        "{swift_bin} describe_all --udid {udid}",
         "{idb} ui describe-all --udid {udid} --json",
         "idb",
     ),
     (
-        "ui_describe_point",
-        "{swift_bin} ui_describe_point --x 165 --y 269 --udid {udid}",
+        "describe_point",
+        "{swift_bin} describe_point --x 165 --y 269 --udid {udid}",
         "{idb} ui describe-point --udid {udid} --json -- 165 269",
         "idb",
     ),
     (
-        "ui_tap",
-        "{swift_bin} ui_tap --x 165 --y 269 --udid {udid}",
+        "tap",
+        "{swift_bin} tap --x 165 --y 269 --udid {udid}",
         "{idb} ui tap --udid {udid} --json -- 165 269",
         "idb",
     ),
     (
         "screenshot",
-        "{swift_bin} ui_view --udid {udid}",
+        "{swift_bin} view --udid {udid}",
         "xcrun simctl io {udid} screenshot --type=png /tmp/bench_ss.png",
         "simctl",
     ),
@@ -213,7 +213,7 @@ def cli_smoke_test(swift_bin: str, idb: str, udid: str) -> None:
     """Quick smoke test for both Swift CLI and idb."""
     info("Smoke testing Swift CLI...")
     try:
-        r = run(f"{swift_bin} ui_tap --x 0 --y 0 --udid {udid}", timeout=10)
+        r = run(f"{swift_bin} tap --x 0 --y 0 --udid {udid}", timeout=10)
         if r.returncode != 0:
             error(f"Swift CLI smoke test failed: {r.stderr.strip()}")
             sys.exit(1)
