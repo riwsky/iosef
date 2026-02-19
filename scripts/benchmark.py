@@ -5,6 +5,7 @@
 # ///
 """Benchmark Swift MCP vs Node MCP (mcp mode) and/or Swift CLI vs idb (cli mode)."""
 
+import concurrent.futures
 import json
 import os
 import shutil
@@ -94,52 +95,83 @@ def resolve_jj_revision(rev: str) -> tuple[str, str]:
     return change_id, description
 
 
-def build_baseline(rev: str, *, verbose: bool = False) -> tuple[Path, str]:
-    """Create a jj workspace at the given revision, build it, return (binary_path, display_label)."""
+def _swift_build(label: str, cwd: Path | None = None, *, verbose: bool = False) -> None:
+    """Run swift build -c release in the given directory. Exits on failure."""
+    r = subprocess.run(
+        ["swift", "build", "-c", "release"],
+        cwd=cwd,
+        timeout=300,
+        **({"capture_output": True, "text": True} if not verbose else {}),
+    )
+    if r.returncode != 0:
+        error(f"{label} build failed")
+        if not verbose and r.stderr:
+            click.echo(r.stderr)
+        sys.exit(1)
+    info(f"{label} built successfully")
+
+
+def _run_in(cwd: Path, cmd: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    """Run a shell command in a specific directory."""
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+
+
+def prepare_baseline_workspace(rev: str) -> tuple[Path, str]:
+    """Ensure a jj workspace exists at the given revision. Returns (workspace_dir, display_label).
+
+    Reuses an existing workspace (preserving .build cache) when possible,
+    falling back to fresh creation.  Must be called before any parallel builds
+    since it uses jj.
+    """
     change_id, description = resolve_jj_revision(rev)
     short_id = change_id[:8]
     label = f"{short_id}: {description}" if description != "(no description)" else short_id
 
-    info(f"Building baseline from revision '{rev}' ({label})...")
+    info(f"Preparing baseline workspace for revision '{rev}' ({label})...")
 
     # Warn if baseline is the same as current working copy
     current = run("jj log -r @ --no-graph -T change_id")
     if current.returncode == 0 and current.stdout.strip() == change_id:
         warn(f"Revision '{rev}' resolves to the current working copy — self-comparison will be meaningless")
 
-    # Clean up any prior workspace
+    # Try to reuse existing workspace (preserves .build cache for faster incremental builds)
+    if BASELINE_WORKSPACE_DIR.exists():
+        # Sync workspace in case repo was updated since it was last used
+        _run_in(BASELINE_WORKSPACE_DIR, "jj workspace update-stale")
+        # Rebase the (empty) working copy onto the target revision
+        r = _run_in(BASELINE_WORKSPACE_DIR, f"jj rebase -d '{rev}'")
+        if r.returncode == 0:
+            info("Reused existing baseline workspace (incremental build)")
+            return BASELINE_WORKSPACE_DIR, label
+        warn(f"Failed to update existing workspace: {r.stderr.strip()}")
+        info("Recreating baseline workspace from scratch...")
+
+    # Fresh creation
     if BASELINE_WORKSPACE_DIR.exists():
         shutil.rmtree(BASELINE_WORKSPACE_DIR)
     run(f"jj workspace forget {BASELINE_WORKSPACE_NAME}")  # ignore errors
 
-    # Create workspace at the revision
     r = run(f"jj workspace add {BASELINE_WORKSPACE_DIR} --name {BASELINE_WORKSPACE_NAME} -r '{rev}'")
     if r.returncode != 0:
         error(f"Failed to create jj workspace: {r.stderr.strip()}")
         sys.exit(1)
 
-    # Build in the workspace
-    info("Building baseline binary (swift build -c release)...")
-    r = subprocess.run(
-        ["swift", "build", "-c", "release"],
-        cwd=BASELINE_WORKSPACE_DIR,
-        timeout=300,
-        **({"capture_output": True, "text": True} if not verbose else {}),
-    )
-    if r.returncode != 0:
-        error("Baseline build failed")
-        if not verbose and r.stderr:
-            click.echo(r.stderr)
-        cleanup_baseline()
-        sys.exit(1)
+    return BASELINE_WORKSPACE_DIR, label
 
-    binary = BASELINE_WORKSPACE_DIR / ".build" / "release" / "ios_simulator_cli"
+
+def build_baseline(rev: str, *, verbose: bool = False) -> tuple[Path, str]:
+    """Create a jj workspace at the given revision, build it, return (binary_path, display_label)."""
+    workspace_dir, label = prepare_baseline_workspace(rev)
+
+    info("Building baseline binary (swift build -c release)...")
+    _swift_build("Baseline", cwd=workspace_dir, verbose=verbose)
+
+    binary = workspace_dir / ".build" / "release" / "ios_simulator_cli"
     if not binary.exists():
         error(f"Baseline binary not found at {binary}")
         cleanup_baseline()
         sys.exit(1)
 
-    info(f"Baseline built successfully: {binary}")
     return binary, label
 
 
@@ -523,26 +555,33 @@ def main(
             sys.exit(1)
     info(f"Using simulator UDID: {udid}")
 
-    # Build current release binary (always rebuild to avoid stale binaries)
-    info("Building current release binary...")
-    r = subprocess.run(
-        ["swift", "build", "-c", "release"],
-        **({"capture_output": True, "text": True} if not verbose else {}),
-    )
-    if r.returncode != 0:
-        error("Build failed")
-        if not verbose and r.stderr:
-            click.echo(r.stderr)
-        sys.exit(1)
-
-    # Build self-comparison baseline if requested
+    # Build binaries (current + baseline in parallel when possible)
     do_baseline = not no_from_version
     baseline_bin: Path | None = None
     baseline_label: str | None = None
 
     try:
         if do_baseline:
-            baseline_bin, baseline_label = build_baseline(from_version, verbose=verbose)
+            # Prepare baseline workspace first (needs jj, must be sequential)
+            baseline_workspace, baseline_label = prepare_baseline_workspace(from_version)
+
+            # Build both binaries in parallel
+            info("Building current + baseline binaries in parallel...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                current_fut = pool.submit(_swift_build, "Current", verbose=verbose)
+                baseline_fut = pool.submit(_swift_build, "Baseline", cwd=baseline_workspace, verbose=verbose)
+                current_fut.result()
+                baseline_fut.result()
+
+            baseline_bin = baseline_workspace / ".build" / "release" / "ios_simulator_cli"
+            if not baseline_bin.exists():
+                error(f"Baseline binary not found at {baseline_bin}")
+                cleanup_baseline()
+                sys.exit(1)
+        else:
+            # No baseline — just build current
+            info("Building current release binary...")
+            _swift_build("Current", verbose=verbose)
 
         # MCP-mode prerequisites
         swift_mcp_cmd = f"{swift_bin} mcp"
@@ -624,8 +663,7 @@ def main(
         info(f"Summary written to {summary_path}")
         click.echo()
     finally:
-        if do_baseline:
-            cleanup_baseline()
+        pass  # Baseline workspace preserved for incremental builds on next run
 
 
 if __name__ == "__main__":
