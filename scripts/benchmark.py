@@ -280,7 +280,8 @@ def bench(
         "hyperfine",
         "--warmup", str(warmup),
         "--min-runs", str(min_runs),
-        "--command-name", f"{current_name}: {tool}", swift_full,
+        "--reference", swift_full,
+        "--reference-name", f"{current_name}: {tool}",
     ]
 
     if baseline_swift_cmd:
@@ -325,7 +326,8 @@ def cli_bench(
         "hyperfine",
         "--warmup", str(warmup),
         "--min-runs", str(min_runs),
-        "--command-name", f"{current_name}: {name}", swift_full,
+        "--reference", swift_full,
+        "--reference-name", f"{current_name}: {name}",
     ]
 
     if self_baseline_cmd:
@@ -474,7 +476,7 @@ def generate_summary(
 @click.option(
     "--mode",
     type=click.Choice(["mcp", "cli", "all"]),
-    default="mcp",
+    default="cli",
     show_default=True,
     help="Benchmark mode: mcp (Swift vs Node MCP), cli (Swift CLI vs idb), or all.",
 )
