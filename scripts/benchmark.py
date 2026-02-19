@@ -521,19 +521,17 @@ def main(
             sys.exit(1)
     info(f"Using simulator UDID: {udid}")
 
-    # Check Swift binary
-    if not Path(swift_bin).exists():
-        warn(f"Swift binary not found at {swift_bin}")
-        info("Building release binary...")
-        r = subprocess.run(
-            ["swift", "build", "-c", "release"],
-            **({"capture_output": True, "text": True} if not verbose else {}),
-        )
-        if r.returncode != 0:
-            error("Build failed")
-            if not verbose and r.stderr:
-                click.echo(r.stderr)
-            sys.exit(1)
+    # Build current release binary (always rebuild to avoid stale binaries)
+    info("Building current release binary...")
+    r = subprocess.run(
+        ["swift", "build", "-c", "release"],
+        **({"capture_output": True, "text": True} if not verbose else {}),
+    )
+    if r.returncode != 0:
+        error("Build failed")
+        if not verbose and r.stderr:
+            click.echo(r.stderr)
+        sys.exit(1)
 
     # Build self-comparison baseline if requested
     do_baseline = not no_from_version
