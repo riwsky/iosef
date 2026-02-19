@@ -306,6 +306,9 @@ def bench(
     swift_full = mcp_call_cmd(tool, params, udid, swift_cmd)
     node_full = mcp_call_cmd(tool, params, udid, node_cmd)
 
+    # Pre-check if node MCP command works; if not, skip it
+    node_ok = subprocess.run(node_full, shell=True, capture_output=True, timeout=10).returncode == 0
+
     current_name = "swift (current)" if baseline_swift_cmd else "swift"
 
     hyperfine_cmd = [
@@ -322,8 +325,12 @@ def bench(
             "--command-name", f"swift ({baseline_label}): {tool}", baseline_full,
         ]
 
+    if node_ok:
+        hyperfine_cmd += ["--command-name", f"node: {tool}", node_full]
+    else:
+        warn(f"node MCP command failed for '{tool}', benchmarking without node baseline")
+
     hyperfine_cmd += [
-        "--command-name", f"node: {tool}", node_full,
         "--export-json", str(RESULTS_DIR / f"{tool}.json"),
         "--export-markdown", str(RESULTS_DIR / f"{tool}.md"),
     ]
