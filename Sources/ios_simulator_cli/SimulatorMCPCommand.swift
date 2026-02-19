@@ -586,6 +586,42 @@ func allTools() -> [Tool] {
         ))
     }
 
+    // MARK: - Log tools
+
+    let logFilterProperties: [String: Value] = [
+        "udid": udidSchema,
+        "predicate": .object(["type": .string("string"), "description": .string("NSPredicate filter (e.g. 'subsystem == \"com.example\"'). Mutually exclusive with 'process'.")]),
+        "process": .object(["type": .string("string"), "description": .string("Shorthand process name filter (becomes process == \"<value>\"). Mutually exclusive with 'predicate'.")]),
+        "style": .object(["type": .string("string"), "enum": .array([.string("compact"), .string("json"), .string("ndjson"), .string("syslog")]), "description": .string("Output style (default: compact)")]),
+        "level": .object(["type": .string("string"), "enum": .array([.string("info"), .string("debug")]), "description": .string("Include info or debug level messages (default: default level only)")]),
+    ]
+
+    if !isFiltered("log_show") {
+        var logShowProps = logFilterProperties
+        logShowProps["last"] = .object(["type": .string("string"), "description": .string("Time range to show (e.g. '5m', '1h', '30s'). Default: '5m'")])
+        tools.append(Tool(
+            name: "log_show",
+            description: "Show recent log entries from the simulator's unified log. Uses 'xcrun simctl spawn <udid> log show'.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(logShowProps),
+            ])
+        ))
+    }
+
+    if !isFiltered("log_stream") {
+        var logStreamProps = logFilterProperties
+        logStreamProps["duration"] = .object(["type": .string("number"), "description": .string("Seconds to stream (1-30, default: 5)")])
+        tools.append(Tool(
+            name: "log_stream",
+            description: "Stream live log entries from the simulator for a fixed duration. Uses 'xcrun simctl spawn <udid> log stream --timeout'.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(logStreamProps),
+            ])
+        ))
+    }
+
     return tools
 }
 
@@ -628,6 +664,10 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleInput(params)
         case "wait":
             return try await handleWait(params)
+        case "log_show":
+            return try await handleLogShow(params)
+        case "log_stream":
+            return try await handleLogStream(params)
         default:
             return .init(content: [.text("Unknown tool: \(params.name)")], isError: true)
         }
@@ -899,6 +939,114 @@ func handleWait(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     throw SelectorError.noMatch(selector)
 }
 
+// MARK: - Log tool helpers
+
+enum LogToolError: Error, LocalizedError {
+    case conflictingFilters
+
+    var errorDescription: String? {
+        switch self {
+        case .conflictingFilters:
+            return "Cannot specify both 'predicate' and 'process' — use one or the other"
+        }
+    }
+}
+
+func buildLogArguments(udid: String, subcommand: String, predicate: String?, process: String?, style: String?, level: String?, extraArgs: [String]) -> [String] {
+    var args = ["/usr/bin/xcrun", "simctl", "spawn", udid, "log", subcommand]
+    args += extraArgs
+
+    if let predicate {
+        args += ["--predicate", predicate]
+    } else if let process {
+        args += ["--predicate", "process == \"\(process)\""]
+    }
+
+    if let style {
+        args += ["--style", style]
+    }
+
+    if let level {
+        switch level {
+        case "debug":
+            args += ["--info", "--debug"]
+        case "info":
+            args += ["--info"]
+        default:
+            break
+        }
+    }
+
+    return args
+}
+
+func processLogOutput(_ raw: String) -> String {
+    let maxLines = 500
+    var lines = raw.components(separatedBy: "\n")
+
+    // Strip the "Filtering the log data..." preamble line
+    if let first = lines.first, first.hasPrefix("Filtering the log data") {
+        lines.removeFirst()
+    }
+
+    // Remove leading/trailing empty lines
+    while lines.first?.isEmpty == true { lines.removeFirst() }
+    while lines.last?.isEmpty == true { lines.removeLast() }
+
+    if lines.count > maxLines {
+        let truncated = Array(lines.prefix(maxLines))
+        return truncated.joined(separator: "\n") + "\n\n[Truncated: showing \(maxLines) of \(lines.count) lines]"
+    }
+
+    return lines.joined(separator: "\n")
+}
+
+func handleLogShow(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let predicate = params.arguments?["predicate"]?.stringValue
+    let process = params.arguments?["process"]?.stringValue
+    if predicate != nil && process != nil {
+        throw LogToolError.conflictingFilters
+    }
+
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let last = params.arguments?["last"]?.stringValue ?? "5m"
+    let style = params.arguments?["style"]?.stringValue ?? "compact"
+    let level = params.arguments?["level"]?.stringValue
+
+    let args = buildLogArguments(udid: udid, subcommand: "show", predicate: predicate, process: process, style: style, level: level, extraArgs: ["--last", last])
+    let result = try await SimCtlClient.run(args[0], arguments: Array(args.dropFirst()))
+    let output = processLogOutput(result.stdout)
+
+    if output.isEmpty {
+        return .init(content: [.text("No log entries found")])
+    }
+    return .init(content: [.text(output)])
+}
+
+func handleLogStream(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let predicate = params.arguments?["predicate"]?.stringValue
+    let process = params.arguments?["process"]?.stringValue
+    if predicate != nil && process != nil {
+        throw LogToolError.conflictingFilters
+    }
+
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let rawDuration = extractDouble(params.arguments?["duration"]) ?? 5.0
+    let duration = max(1, min(30, Int(rawDuration)))
+    let style = params.arguments?["style"]?.stringValue ?? "compact"
+    let level = params.arguments?["level"]?.stringValue
+
+    let args = buildLogArguments(udid: udid, subcommand: "stream", predicate: predicate, process: process, style: style, level: level, extraArgs: ["--timeout", "\(duration)"])
+    let timeout = Duration.seconds(duration + 5)
+    let result = try await SimCtlClient.run(args[0], arguments: Array(args.dropFirst()), timeout: timeout)
+    let output = processLogOutput(result.stdout)
+
+    if output.isEmpty {
+        return .init(content: [.text("No log entries captured")])
+    }
+    return .init(content: [.text(output)])
+}
+
 // MARK: - Default device name from VCS root
 
 /// Run a command and return trimmed stdout, or nil on failure. Times out after `timeout` (default 5s).
@@ -1140,6 +1288,8 @@ struct SimulatorCLI: AsyncParsableCommand {
             TapElement.self,
             Input.self,
             Wait.self,
+            LogShow.self,
+            LogStream.self,
         ]
     )
 }
@@ -1733,5 +1883,96 @@ struct Wait: AsyncParsableCommand {
         if let timeout { args["timeout"] = .double(timeout) }
         if let udid = common.udid { args["udid"] = .string(udid) }
         try await runToolCLI(toolName: "wait", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+// MARK: - Log CLI subcommands
+
+struct LogShow: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "log_show",
+        abstract: "Show recent simulator log entries.",
+        discussion: """
+            Reads the simulator's unified log via 'xcrun simctl spawn <udid> log show'. \
+            Filter by process name or NSPredicate. Default: last 5 minutes, compact style.
+
+            Examples:
+              ios_simulator_cli log_show --process SpringBoard --last 5s
+              ios_simulator_cli log_show --predicate 'subsystem == "com.apple.UIKit"' --last 3s
+              ios_simulator_cli log_show --level debug --last 1m
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    @Option(name: .long, help: "Time range to show (e.g. '5m', '1h', '30s'). Default: '5m'")
+    var last: String?
+
+    @Option(name: .long, help: "NSPredicate filter (mutually exclusive with --process)")
+    var predicate: String?
+
+    @Option(name: .long, help: "Process name filter (mutually exclusive with --predicate)")
+    var process: String?
+
+    @Option(name: .long, help: "Output style: compact (default), json, ndjson, syslog")
+    var style: String?
+
+    @Option(name: .long, help: "Log level: info or debug")
+    var level: String?
+
+    func run() async throws {
+        var args: [String: Value] = [:]
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        if let last { args["last"] = .string(last) }
+        if let predicate { args["predicate"] = .string(predicate) }
+        if let process { args["process"] = .string(process) }
+        if let style { args["style"] = .string(style) }
+        if let level { args["level"] = .string(level) }
+        try await runToolCLI(toolName: "log_show", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+    }
+}
+
+struct LogStream: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "log_stream",
+        abstract: "Stream live simulator log entries.",
+        discussion: """
+            Streams the simulator's unified log for a fixed duration via \
+            'xcrun simctl spawn <udid> log stream --timeout'. \
+            Filter by process name or NSPredicate. Default: 5 seconds, compact style.
+
+            Examples:
+              ios_simulator_cli log_stream --process SpringBoard --duration 3
+              ios_simulator_cli log_stream --predicate 'process == "MyApp"' --duration 10
+              ios_simulator_cli log_stream --level info --duration 5
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    @Option(name: .long, help: "Seconds to stream (1-30, default: 5)")
+    var duration: Int?
+
+    @Option(name: .long, help: "NSPredicate filter (mutually exclusive with --process)")
+    var predicate: String?
+
+    @Option(name: .long, help: "Process name filter (mutually exclusive with --predicate)")
+    var process: String?
+
+    @Option(name: .long, help: "Output style: compact (default), json, ndjson, syslog")
+    var style: String?
+
+    @Option(name: .long, help: "Log level: info or debug")
+    var level: String?
+
+    func run() async throws {
+        var args: [String: Value] = [:]
+        if let udid = common.udid { args["udid"] = .string(udid) }
+        if let duration { args["duration"] = .double(Double(duration)) }
+        if let predicate { args["predicate"] = .string(predicate) }
+        if let process { args["process"] = .string(process) }
+        if let style { args["style"] = .string(style) }
+        if let level { args["level"] = .string(level) }
+        try await runToolCLI(toolName: "log_stream", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
