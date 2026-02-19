@@ -327,7 +327,7 @@ func allTools() -> [Tool] {
     if !isFiltered("describe_all") {
         tools.append(Tool(
             name: "describe_all",
-            description: "Describes accessibility information for the entire screen in the iOS Simulator. Coordinates are (center±half-size) in iOS points — the center value is the tap target.",
+            description: "Describes accessibility information for the entire screen in the iOS Simulator. Coordinates are (center±half-size) in iOS points — the center value is the tap target. Use find for targeted queries by role, name, or identifier.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -357,7 +357,7 @@ func allTools() -> [Tool] {
     if !isFiltered("tap") {
         tools.append(Tool(
             name: "tap",
-            description: "Tap on the screen in the iOS Simulator",
+            description: "Tap at (x, y) on the iOS Simulator screen. Prefer tap_element when targeting a named/accessible element.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -378,7 +378,7 @@ func allTools() -> [Tool] {
     if !isFiltered("type") {
         tools.append(Tool(
             name: "type",
-            description: "Input text into the iOS Simulator",
+            description: "Type text into the focused field in the iOS Simulator. Prefer input to find, focus, and type in one step.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -1100,23 +1100,22 @@ struct SimulatorCLI: AsyncParsableCommand {
               IOS_SIMULATOR_MCP_TIMEOUT                 Override default timeout (seconds).
               IOS_SIMULATOR_MCP_FILTERED_TOOLS          Comma-separated tools to hide from MCP.
 
-            Example:
-              # See which simulator is booted
-              ios_simulator_cli get_booted_sim_id
+            Example — selector-based (preferred):
+              # Tap a button by name
+              ios_simulator_cli tap_element --name "Sign In"
 
-              # Inspect the UI
+              # Type into a field by role
+              ios_simulator_cli input --role AXTextField --text "hello"
+
+              # Wait for a screen to load
+              ios_simulator_cli wait --name "Welcome"
+
+              # Check if an element exists
+              ios_simulator_cli exists --role AXButton --name "Submit"
+
+            Example — coordinate-based (when elements lack labels):
               ios_simulator_cli describe_all
-
-              # Tap a button discovered at (195, 420)
               ios_simulator_cli tap --x 195 --y 420
-
-              # Type into the now-focused text field
-              ios_simulator_cli type --text "hello world"
-
-              # Take a screenshot
-              ios_simulator_cli view --output /tmp/screen.png
-
-              # Swipe up to scroll
               ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 
               See 'ios_simulator_cli help <subcommand>' for detailed help.
@@ -1276,6 +1275,8 @@ struct UIDescribeAll: AsyncParsableCommand {
             including roles, labels, frames, and values. Use this to discover element \
             positions for tap, or to understand the current UI state.
 
+            Tip: use find for targeted queries instead of scanning the full tree.
+
             Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
             Use --depth to limit tree depth (0 = root only). Use --json for machine-readable \
@@ -1342,6 +1343,8 @@ struct UITap: AsyncParsableCommand {
             Sends a HID touch event directly to the simulator (no simctl overhead). \
             Coordinates are in iOS points. Use describe_all to find element positions.
 
+            Tip: prefer tap_element when targeting a named element (no coordinate lookup needed).
+
             For long-press, pass --duration (in seconds).
 
             Examples:
@@ -1376,6 +1379,8 @@ struct UIType: AsyncParsableCommand {
         discussion: """
             Sends keyboard HID events to type text into whatever field currently has \
             focus in the simulator. Only printable ASCII characters (0x20-0x7E) are supported.
+
+            Tip: prefer input to find a field, tap it, and type in one step.
 
             Tap a text field first with tap to ensure it has focus.
 
