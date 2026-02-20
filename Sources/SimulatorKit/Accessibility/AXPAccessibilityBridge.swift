@@ -69,7 +69,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     public func accessibilityElements(timeout: Duration = .seconds(10)) throws -> [TreeNode] {
         let start = ContinuousClock.now
         let deadline = start.advanced(by: timeout)
-        let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+        let timeoutSeconds = timeout.totalSeconds
         let dispatcher = delegate as! AXPTranslationDispatcher
 
         let token = UUID().uuidString
@@ -127,7 +127,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         }
 
         let elapsed = ContinuousClock.now - start
-        let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
+        let elapsedMs = Int(elapsed.totalSeconds * 1000)
         if verboseLogging {
             FileHandle.standardError.write(Data("[ios_simulator_cli] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
         }
@@ -153,7 +153,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     public func accessibilityElementAtPoint(x: Double, y: Double, timeout: Duration = .seconds(10)) throws -> TreeNode {
         let start = ContinuousClock.now
         let deadline = start.advanced(by: timeout)
-        let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+        let timeoutSeconds = timeout.totalSeconds
         let dispatcher = delegate as! AXPTranslationDispatcher
 
         let token = UUID().uuidString
@@ -186,7 +186,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         var elementCount = 0
         var result = try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
         let elapsed = ContinuousClock.now - start
-        let elapsedMs = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
+        let elapsedMs = Int(elapsed.totalSeconds * 1000)
         if verboseLogging {
             FileHandle.standardError.write(Data("[ios_simulator_cli] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
         }
@@ -234,11 +234,6 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let frame = callFrameMethod(element as AnyObject, selector: frameSel)
         cachedRootFrame = frame
         return frame
-    }
-
-    /// Clears the cached root frame, forcing the next point query to re-fetch it.
-    public func invalidateRootFrameCache() {
-        cachedRootFrame = nil
     }
 
     /// Recursively transforms all frames in a TreeNode from macOS window coords to iOS points.
@@ -573,7 +568,7 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
             if let deadline = deadline {
                 let now = ContinuousClock.now
                 let remaining = deadline - now
-                let remainingSecs = Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18
+                let remainingSecs = remaining.totalSeconds
                 if remainingSecs <= 0 {
                     return Self.emptyAXPResponse()
                 }

@@ -30,7 +30,7 @@ public enum SimCtlClient {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+        let timeoutSeconds = timeout.totalSeconds
 
         try process.run()
 
@@ -155,12 +155,6 @@ public enum SimCtlClient {
     /// Gets the UDID of the booted device, or uses the provided one.
     public static func resolveDeviceID(_ udid: String?) throws -> String {
         try resolveDevice(udid).udid
-    }
-
-    /// Gets the device name for a given UDID.
-    public static func getDeviceName(udid: String) throws -> String? {
-        let devices = try getAllDevices()
-        return devices.first(where: { $0.udid.caseInsensitiveCompare(udid) == .orderedSame })?.name
     }
 
     public enum SimCtlError: Error, LocalizedError {

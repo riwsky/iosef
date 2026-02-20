@@ -19,7 +19,7 @@ func withTimeout<T: Sendable>(
     _ timeout: Duration,
     _ operation: @escaping @Sendable () throws -> T
 ) async throws -> T {
-    let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+    let seconds = timeout.totalSeconds
     return try await withCheckedThrowingContinuation { continuation in
         let lock = NSLock()
         nonisolated(unsafe) var resumed = false
@@ -122,17 +122,26 @@ func resolveSelector(from params: CallTool.Parameters) async throws -> (selector
 enum SelectorError: Error, LocalizedError {
     case emptySelector
     case noMatch(AXSelector)
+    case noFrame(AXSelector)
 
     var errorDescription: String? {
         switch self {
         case .emptySelector:
             return "At least one selector field (role, name, identifier) must be provided"
         case .noMatch(let sel):
-            var parts: [String] = []
-            if let r = sel.role { parts.append("role=\(r)") }
-            if let n = sel.name { parts.append("name=\(n)") }
-            if let id = sel.identifier { parts.append("identifier=\(id)") }
+            let parts = [
+                sel.role.map { "role=\($0)" },
+                sel.name.map { "name=\($0)" },
+                sel.identifier.map { "identifier=\($0)" },
+            ].compactMap { $0 }
             return "No element found matching: \(parts.joined(separator: ", "))"
+        case .noFrame(let sel):
+            let parts = [
+                sel.role.map { "role=\($0)" },
+                sel.name.map { "name=\($0)" },
+                sel.identifier.map { "identifier=\($0)" },
+            ].compactMap { $0 }
+            return "Element found but has no frame: \(parts.joined(separator: ", "))"
         }
     }
 }
@@ -320,12 +329,6 @@ actor SimulatorCache {
         return client
     }
 
-    func invalidate() {
-        deviceCache = nil
-        axpBridges.removeAll()
-        hidClients.removeAll()
-    }
-
     /// Deterministic cleanup: release HID clients and AXP bridges in reverse
     /// order of creation so that Mach ports and XPC connections are closed
     /// before the process exits, rather than relying on OS reaping.
@@ -333,17 +336,6 @@ actor SimulatorCache {
         axpBridges.removeAll()
         hidClients.removeAll()
         deviceCache = nil
-    }
-}
-
-enum MCPToolError: Error, LocalizedError {
-    case simulatorNotRunning
-
-    var errorDescription: String? {
-        switch self {
-        case .simulatorNotRunning:
-            return "iOS Simulator is not running"
-        }
     }
 }
 
@@ -839,7 +831,7 @@ func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result
 }
 
 func handleInstallApp(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
     guard let appPath = params.arguments?["app_path"]?.stringValue else {
         return .init(content: [.text("Missing required parameter: app_path")], isError: true)
@@ -866,18 +858,13 @@ func handleInstallApp(_ params: CallTool.Parameters) async throws -> CallTool.Re
 }
 
 func handleLaunchApp(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try SimCtlClient.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
 
     guard let bundleID = params.arguments?["bundle_id"]?.stringValue else {
         return .init(content: [.text("Missing required parameter: bundle_id")], isError: true)
     }
 
-    let terminateExisting: Bool
-    if let terminateValue = params.arguments?["terminate_running"], Bool(terminateValue) == true {
-        terminateExisting = true
-    } else {
-        terminateExisting = false
-    }
+    let terminateExisting = params.arguments?["terminate_running"].flatMap({ Bool($0) }) ?? false
 
     let bridge = PrivateFrameworkBridge.shared
     let device = try bridge.lookUpDevice(udid: udid)
@@ -915,18 +902,18 @@ func handleText(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     return .init(content: [.text(text)])
 }
 
-func handleTapElement(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+/// Resolves a selector, finds the first match, and returns its center + HID client for tapping.
+func resolveAndTapFirstMatch(from params: CallTool.Parameters) async throws -> (center: (x: Double, y: Double), hidClient: IndigoHIDClient) {
     let (selector, matches) = try await resolveSelector(from: params)
-    guard let first = matches.first else {
-        throw SelectorError.noMatch(selector)
-    }
-    guard let frame = first.frame else {
-        throw SelectorError.noMatch(selector)
-    }
-
-    let center = frame.center
+    guard let first = matches.first else { throw SelectorError.noMatch(selector) }
+    guard let frame = first.frame else { throw SelectorError.noFrame(selector) }
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    return (frame.center, hidClient)
+}
+
+func handleTapElement(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
 
     if let duration = extractDouble(params.arguments?["duration"]) {
         hidClient.longPress(x: center.x, y: center.y, duration: duration)
@@ -942,17 +929,7 @@ func handleInput(_ params: CallTool.Parameters) async throws -> CallTool.Result 
         return .init(content: [.text("Missing required parameter: text")], isError: true)
     }
 
-    let (selector, matches) = try await resolveSelector(from: params)
-    guard let first = matches.first else {
-        throw SelectorError.noMatch(selector)
-    }
-    guard let frame = first.frame else {
-        throw SelectorError.noMatch(selector)
-    }
-
-    let center = frame.center
-    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
 
     hidClient.tap(x: center.x, y: center.y)
     usleep(100_000) // 100ms delay for keyboard to appear
@@ -1094,11 +1071,7 @@ func handleLogStream(_ params: CallTool.Parameters) async throws -> CallTool.Res
 // MARK: - Default device name from VCS root
 
 /// Run a command and return trimmed stdout, or nil on failure. Times out after `timeout` (default 5s).
-func runForOutput(_ executable: String, _ arguments: String..., timeout: Duration = .seconds(5)) -> String? {
-    runForOutputImpl(executable, arguments: Array(arguments), timeout: timeout)
-}
-
-private func runForOutputImpl(_ executable: String, arguments: [String], timeout: Duration) -> String? {
+func runForOutput(_ executable: String, _ arguments: [String], timeout: Duration = .seconds(5)) -> String? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = arguments
@@ -1117,7 +1090,7 @@ private func runForOutputImpl(_ executable: String, arguments: [String], timeout
         return nil
     }
 
-    let timeoutSeconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+    let timeoutSeconds = timeout.totalSeconds
     let waitResult = semaphore.wait(timeout: .now() + timeoutSeconds)
 
     if waitResult == .timedOut {
@@ -1143,8 +1116,8 @@ func computeDefaultDeviceName() -> String? {
     }
 
     // Try jj root first (Jujutsu), then git
-    let root = runForOutput("/usr/bin/env", "jj", "root")
-             ?? runForOutput("/usr/bin/git", "rev-parse", "--show-toplevel")
+    let root = runForOutput("/usr/bin/env", ["jj", "root"])
+             ?? runForOutput("/usr/bin/git", ["rev-parse", "--show-toplevel"])
 
     guard let root else { return nil }
     return URL(fileURLWithPath: root).lastPathComponent
@@ -1223,23 +1196,18 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
             case .text(let text):
                 print(text)
             case .image(let data, let mimeType, _):
+                guard let imageData = Data(base64Encoded: data) else {
+                    fputs("Error: failed to decode base64 image data\n", stderr)
+                    continue
+                }
                 if let outputPath = output {
                     let path = ensureAbsolutePath(outputPath)
-                    guard let imageData = Data(base64Encoded: data) else {
-                        fputs("Error: failed to decode base64 image data\n", stderr)
-                        continue
-                    }
                     try imageData.write(to: URL(fileURLWithPath: path))
                     print("Image (\(mimeType)) saved to \(path)")
                 } else {
-                    // CLI mode: save to temp file instead of printing base64
                     let timestamp = Int(Date().timeIntervalSince1970)
                     let ext = mimeType.split(separator: "/").last.map(String.init) ?? "jpg"
                     let tempPath = "/tmp/ios_sim_screenshot_\(timestamp).\(ext)"
-                    guard let imageData = Data(base64Encoded: data) else {
-                        fputs("Error: failed to decode base64 image data\n", stderr)
-                        continue
-                    }
                     try imageData.write(to: URL(fileURLWithPath: tempPath))
                     print(tempPath)
                 }

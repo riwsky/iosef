@@ -228,7 +228,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     /// Gets the screen size in pixels from a SimDevice's deviceType.
     public func screenSize(forDevice device: AnyObject) -> CGSize {
-        guard let deviceType = (device as AnyObject).value(forKey: "deviceType") else {
+        guard let deviceType = device.value(forKey: "deviceType") else {
             return CGSize(width: 1179, height: 2556)
         }
         if let size = (deviceType as AnyObject).value(forKey: "mainScreenSize") as? CGSize {
@@ -239,7 +239,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     /// Gets the screen scale from a SimDevice's deviceType.
     public func screenScale(forDevice device: AnyObject) -> Float {
-        guard let deviceType = (device as AnyObject).value(forKey: "deviceType") else {
+        guard let deviceType = device.value(forKey: "deviceType") else {
             return 3.0
         }
         if let scale = (deviceType as AnyObject).value(forKey: "mainScreenScale") as? NSNumber {
@@ -291,7 +291,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     /// Calls -[SimDevice installApplication:withOptions:error:] via IMP.
     public func installApp(device: AnyObject, appURL: URL) throws {
         let sel = NSSelectorFromString("installApplication:withOptions:error:")
-        guard let method = class_getInstanceMethod(type(of: device as AnyObject), sel) else {
+        guard let method = class_getInstanceMethod(type(of: device), sel) else {
             throw PrivateFrameworkError.classNotFound("SimDevice.installApplication:withOptions:error:")
         }
 
@@ -320,7 +320,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     /// Returns the launched process PID.
     public func launchApp(device: AnyObject, bundleID: String, terminateExisting: Bool = false) throws -> Int32 {
         let sel = NSSelectorFromString("launchApplicationAsyncWithID:options:completionQueue:completionHandler:")
-        guard let method = class_getInstanceMethod(type(of: device as AnyObject), sel) else {
+        guard let method = class_getInstanceMethod(type(of: device), sel) else {
             throw PrivateFrameworkError.classNotFound("SimDevice.launchApplicationAsyncWithID:options:completionQueue:completionHandler:")
         }
 
@@ -506,7 +506,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     /// Blocks the calling thread until the async response arrives, or times out.
     public func sendAccessibilityRequest(_ request: AnyObject, toDevice device: AnyObject, timeoutSeconds: Double = 10.0) throws -> AnyObject {
         let sel = NSSelectorFromString("sendAccessibilityRequestAsync:completionQueue:completionHandler:")
-        guard let method = class_getInstanceMethod(type(of: device as AnyObject), sel) else {
+        guard let method = class_getInstanceMethod(type(of: device), sel) else {
             throw PrivateFrameworkError.classNotFound("SimDevice.sendAccessibilityRequestAsync:completionQueue:completionHandler:")
         }
 
@@ -557,7 +557,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
         let sel = NSSelectorFromString("sendWithMessage:freeWhenDone:completionQueue:completion:")
 
-        guard let method = class_getInstanceMethod(type(of: client as AnyObject), sel) else {
+        guard let method = class_getInstanceMethod(type(of: client), sel) else {
             free(buffer)
             return
         }

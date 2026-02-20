@@ -91,13 +91,7 @@ public enum TreeSerializer {
 
     /// Serializes a single tree node to a pretty-printed JSON string.
     public static func toJSON(_ node: TreeNode) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(node)
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw SerializerError.encodingFailed
-        }
-        return json
+        try toJSON([node])
     }
 
     // MARK: - Markdown (indented text tree for LLM agents)

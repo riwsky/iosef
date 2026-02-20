@@ -112,7 +112,4 @@ typedef struct {
 #define kButtonTargetHardware    0x33
 #define kButtonTargetKeyboard    0x64
 
-// Touch message total size (IndigoMessage + extra IndigoPayload for duplicated payload)
-#define kIndigoTouchMessageSize  (sizeof(IndigoMessage) + sizeof(IndigoPayload))
-
 #endif // INDIGO_C_TYPES_H
