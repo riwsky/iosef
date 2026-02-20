@@ -885,7 +885,8 @@ func handleFind(_ params: CallTool.Parameters) async throws -> CallTool.Result {
 
 func handleExists(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     let (_, matches) = try await resolveSelector(from: params)
-    return .init(content: [.text(matches.isEmpty ? "false" : "true")])
+    let found = !matches.isEmpty
+    return .init(content: [.text(found ? "true" : "false")], isError: !found)
 }
 
 func handleCount(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -1284,29 +1285,44 @@ struct SimulatorCLI: AsyncParsableCommand {
               ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 
               See 'ios_simulator_cli help <subcommand>' for detailed help.
+
+            Exit Codes:
+              0  Success.
+              1  Check failed (exists returned false) or tool error.
+              2  Bad arguments or usage error.
             """,
         version: serverVersion,
-        subcommands: [
-            MCPServe.self,
-            GetBootedSimID.self,
-            OpenSimulator.self,
-            UIDescribeAll.self,
-            UIDescribePoint.self,
-            UITap.self,
-            UIType.self,
-            UISwipe.self,
-            UIView.self,
-            InstallApp.self,
-            LaunchApp.self,
-            Find.self,
-            Exists.self,
-            Count.self,
-            Text.self,
-            TapElement.self,
-            Input.self,
-            Wait.self,
-            LogShow.self,
-            LogStream.self,
+        subcommands: [MCPServe.self],
+        groupedSubcommands: [
+            CommandGroup(name: "Lifecycle:", subcommands: [
+                GetBootedSimID.self,
+                OpenSimulator.self,
+                InstallApp.self,
+                LaunchApp.self,
+            ]),
+            CommandGroup(name: "Inspection:", subcommands: [
+                UIDescribeAll.self,
+                UIDescribePoint.self,
+                UIView.self,
+            ]),
+            CommandGroup(name: "Interaction:", subcommands: [
+                UITap.self,
+                UIType.self,
+                UISwipe.self,
+            ]),
+            CommandGroup(name: "Selectors:", subcommands: [
+                Find.self,
+                Exists.self,
+                Count.self,
+                Text.self,
+                TapElement.self,
+                Input.self,
+                Wait.self,
+            ]),
+            CommandGroup(name: "Logging:", subcommands: [
+                LogShow.self,
+                LogStream.self,
+            ]),
         ]
     )
 }
