@@ -55,6 +55,95 @@ func withTimeout<T: Sendable>(
     }
 }
 
+// MARK: - Project config
+
+/// Which state directory to use: local (./.ios-simulator-mcp/) or global (~/.ios-simulator-mcp/).
+enum ScopeMode {
+    case auto      // local if ./.ios-simulator-mcp/config.json exists, else global
+    case local     // force ./.ios-simulator-mcp/
+    case global    // force ~/.ios-simulator-mcp/
+}
+
+/// Contents of config.json.
+struct ProjectConfig: Codable {
+    var device: String?
+}
+
+/// Resolved scope mode for this invocation (set by applyScope before dispatch).
+nonisolated(unsafe) var activeScope: ScopeMode = .auto
+
+/// Returns the active state directory path based on scope mode.
+/// Does NOT create the directory — callers that write must ensure it exists first.
+func resolveStateDir(_ scope: ScopeMode = activeScope) -> String {
+    let localDir = FileManager.default.currentDirectoryPath + "/.ios-simulator-mcp"
+    let globalDir = NSHomeDirectory() + "/.ios-simulator-mcp"
+
+    switch scope {
+    case .local:
+        return localDir
+    case .global:
+        return globalDir
+    case .auto:
+        let configPath = localDir + "/config.json"
+        if FileManager.default.fileExists(atPath: configPath) {
+            return localDir
+        }
+        return globalDir
+    }
+}
+
+/// Ensures the state directory (and cache/ subdirectory) exist.
+@discardableResult
+func ensureStateDir(_ scope: ScopeMode = activeScope) -> String {
+    let dir = resolveStateDir(scope)
+    let cacheDir = dir + "/cache"
+    try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+    return dir
+}
+
+/// Reads config.json from the active state directory, or nil if absent/invalid.
+func readProjectConfig() -> ProjectConfig? {
+    let dir = resolveStateDir()
+    let configPath = dir + "/config.json"
+    guard let data = FileManager.default.contents(atPath: configPath),
+          let config = try? JSONDecoder().decode(ProjectConfig.self, from: data) else {
+        return nil
+    }
+    log("Loaded config from \(configPath)")
+    return config
+}
+
+/// Reads config.json and applies its device setting to SimCtlClient.
+func applyProjectConfig() {
+    guard let config = readProjectConfig(),
+          let device = config.device, !device.isEmpty else {
+        return
+    }
+    // Config device overrides the VCS-root heuristic, but not explicit --device flags
+    if SimCtlClient.defaultDeviceName == nil || SimCtlClient.defaultDeviceName == computeDefaultDeviceName() {
+        SimCtlClient.defaultDeviceName = device
+        log("Config: device = \(device)")
+    }
+}
+
+/// Writes a config.json to the given state directory.
+func writeProjectConfig(_ config: ProjectConfig, to dir: String) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(config)
+    let configPath = dir + "/config.json"
+    FileManager.default.createFile(atPath: configPath, contents: data)
+}
+
+/// Applies scope mode from parsed CommonOptions flags.
+func applyScope(from common: CommonOptions) {
+    if common.local {
+        activeScope = .local
+    } else if common.global {
+        activeScope = .global
+    }
+}
+
 // MARK: - Configuration
 
 let serverVersion = "3.0.0"
@@ -81,7 +170,7 @@ func extractDouble(_ value: Value?) -> Double? {
 
 let udidSchema: Value = .object([
     "type": .string("string"),
-    "description": .string("Name or UDID of target simulator, can also be set with the IDB_UDID env var"),
+    "description": .string("Name or UDID of target simulator (auto-detected from config or VCS root if omitted)"),
 ])
 
 // MARK: - Selector schema (reused across selector-based tools)
@@ -245,11 +334,10 @@ actor SimulatorCache {
         return device.udid
     }
 
-    /// Cache file path, keyed by the default device name so different projects
-    /// don't collide if they target different simulators.
+    /// Cache file path inside the active config dir's cache/ subdirectory.
     private static var diskCachePath: String {
-        let key = SimCtlClient.defaultDeviceName ?? "default"
-        return "/tmp/ios-sim-mcp-device-\(key).json"
+        let dir = ensureStateDir()
+        return dir + "/cache/device.json"
     }
 
     private static let diskCacheTTL: TimeInterval = 30
@@ -348,14 +436,6 @@ func allTools() -> [Tool] {
         tools.append(Tool(
             name: "get_booted_sim_id",
             description: "Get the ID of the currently booted iOS simulator",
-            inputSchema: .object(["type": .string("object"), "properties": .object([:])])
-        ))
-    }
-
-    if !isFiltered("open_simulator") {
-        tools.append(Tool(
-            name: "open_simulator",
-            description: "Opens the iOS Simulator application",
             inputSchema: .object(["type": .string("object"), "properties": .object([:])])
         ))
     }
@@ -668,8 +748,6 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
         switch params.name {
         case "get_booted_sim_id":
             return try await handleGetBootedSimID()
-        case "open_simulator":
-            return try await handleOpenSimulator()
         case "describe_all":
             return try await handleUIDescribeAll(params)
         case "describe_point":
@@ -717,11 +795,6 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
 func handleGetBootedSimID() async throws -> CallTool.Result {
     let device = try SimCtlClient.getBootedDevice()
     return .init(content: [.text("Booted Simulator: \"\(device.name)\". UUID: \"\(device.udid)\"")])
-}
-
-func handleOpenSimulator() async throws -> CallTool.Result {
-    _ = try await SimCtlClient.run("/usr/bin/open", arguments: ["-a", "Simulator.app"])
-    return .init(content: [.text("Simulator.app opened successfully")])
 }
 
 func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -1111,11 +1184,6 @@ func runForOutput(_ executable: String, _ arguments: [String], timeout: Duration
 }
 
 func computeDefaultDeviceName() -> String? {
-    // Explicit env var takes priority
-    if let name = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_DEFAULT_DEVICE_NAME"] {
-        return name.isEmpty ? nil : name
-    }
-
     // Try jj root first (Jujutsu), then git
     let root = runForOutput("/usr/bin/env", ["jj", "root"])
              ?? runForOutput("/usr/bin/git", ["rev-parse", "--show-toplevel"])
@@ -1128,6 +1196,9 @@ func computeDefaultDeviceName() -> String? {
 
 func setupGlobals() {
     SimCtlClient.defaultDeviceName = computeDefaultDeviceName()
+
+    // Config file overrides VCS heuristic (but not explicit --device flags)
+    applyProjectConfig()
 
     if let timeoutStr = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_TIMEOUT"],
        let timeoutSecs = Double(timeoutStr), timeoutSecs > 0 {
@@ -1146,6 +1217,12 @@ struct CommonOptions: ParsableArguments {
 
     @Option(name: [.long, .customLong("udid", withSingleDash: false)], help: "Simulator name or UDID (auto-detected if omitted)")
     var device: String? = nil
+
+    @Flag(name: .long, help: "Use local config (./.ios-simulator-mcp/)")
+    var local: Bool = false
+
+    @Flag(name: .long, help: "Use global config (~/.ios-simulator-mcp/)")
+    var global: Bool = false
 
     /// Adds the device identifier to a tool arguments dictionary (as "udid" key for MCP compatibility).
     func addDevice(to args: inout [String: Value]) {
@@ -1178,8 +1255,9 @@ struct SelectorOptions: ParsableArguments {
 
 /// Runs a tool via handleToolCall and formats the result for terminal output.
 /// Used by all CLI subcommands to avoid duplicating output logic.
-func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output: String?, verbose: Bool = false) async throws {
+func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output: String?, verbose: Bool = false, common: CommonOptions? = nil) async throws {
     verboseLogging = verbose
+    if let common { applyScope(from: common) }
     setupGlobals()
 
     log("CLI: running tool '\(toolName)' with args: \(arguments)")
@@ -1206,11 +1284,12 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
                     try imageData.write(to: URL(fileURLWithPath: path))
                     print("Image (\(mimeType)) saved to \(path)")
                 } else {
+                    let cacheDir = ensureStateDir() + "/cache"
                     let timestamp = Int(Date().timeIntervalSince1970)
                     let ext = mimeType.split(separator: "/").last.map(String.init) ?? "jpg"
-                    let tempPath = "/tmp/ios_sim_screenshot_\(timestamp).\(ext)"
-                    try imageData.write(to: URL(fileURLWithPath: tempPath))
-                    print(tempPath)
+                    let screenshotPath = cacheDir + "/screenshot_\(timestamp).\(ext)"
+                    try imageData.write(to: URL(fileURLWithPath: screenshotPath))
+                    print(screenshotPath)
                 }
             case .audio(let data, let mimeType):
                 if let outputPath = output {
@@ -1249,19 +1328,34 @@ struct SimulatorCLI: AsyncParsableCommand {
             in iOS Simulator. Runs as a standalone CLI or as an MCP server (stdio \
             transport) for agent integration.
 
+            Getting Started:
+              ios_simulator_cli start --local --device "my-sim"
+
+              This creates .ios-simulator-mcp/config.json in the current directory, \
+              boots the simulator, and opens Simulator.app. Subsequent commands \
+              auto-detect the device from the config file.
+
+            Config Directory:
+              Local:  ./.ios-simulator-mcp/   (created with start --local)
+              Global: ~/.ios-simulator-mcp/   (default)
+
+              The local directory takes priority when it exists. Use --local or \
+              --global on any command to override. Config stores the device name \
+              and cached state (device resolution, screenshots without --output).
+
             Coordinates:
               All commands use iOS points. The accessibility tree reports positions as
               (center±half-size) — the center value is the tap target. Screenshots are
               coordinate-aligned: 1 pixel = 1 iOS point.
 
             Device Resolution:
-              When --device is omitted, the CLI auto-detects the booted simulator. If
-              multiple simulators are booted, pass --device explicitly (name or UDID).
-              The IDB_UDID environment variable is also respected as a fallback.
+              When --device is omitted, the CLI resolves the target simulator in order:
+              1. config.json device field (local, then global)
+              2. VCS root directory name (git or jj)
+              3. Any booted simulator
+              Pass --device explicitly (name or UDID) to override.
 
             Environment Variables:
-              IDB_UDID                                  Fallback simulator UDID.
-              IOS_SIMULATOR_MCP_DEFAULT_DEVICE_NAME     Override auto-detected device name.
               IOS_SIMULATOR_MCP_DEFAULT_OUTPUT_DIR      Default directory for screenshots.
               IOS_SIMULATOR_MCP_TIMEOUT                 Override default timeout (seconds).
               IOS_SIMULATOR_MCP_FILTERED_TOOLS          Comma-separated tools to hide from MCP.
@@ -1295,8 +1389,8 @@ struct SimulatorCLI: AsyncParsableCommand {
         subcommands: [MCPServe.self],
         groupedSubcommands: [
             CommandGroup(name: "Lifecycle:", subcommands: [
+                Start.self,
                 GetBootedSimID.self,
-                OpenSimulator.self,
                 InstallApp.self,
                 LaunchApp.self,
             ]),
@@ -1425,27 +1519,73 @@ struct GetBootedSimID: AsyncParsableCommand {
     @OptionGroup var common: CommonOptions
 
     func run() async throws {
-        try await runToolCLI(toolName: "get_booted_sim_id", arguments: [:], json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "get_booted_sim_id", arguments: [:], json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
-struct OpenSimulator: AsyncParsableCommand {
+struct Start: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "open_simulator",
-        abstract: "Launch the Simulator.app.",
+        commandName: "start",
+        abstract: "Set up project config and boot the simulator.",
         discussion: """
-            Opens the iOS Simulator application if it's not already running. \
-            Run this before other commands if the simulator isn't open.
+            Creates a config directory, resolves the target device, boots the \
+            simulator if needed, and opens Simulator.app.
+
+            With --local, creates ./.ios-simulator-mcp/ in the current directory. \
+            Without --local, uses the global ~/.ios-simulator-mcp/ directory.
+
+            Device resolution order:
+              1. --device flag
+              2. Existing config file device field
+              3. VCS root directory name
 
             Examples:
-              ios_simulator_cli open_simulator
+              ios_simulator_cli start --local --device "my-sim"
+              ios_simulator_cli start
+              ios_simulator_cli start --device 6C07B68F-...
             """
     )
 
     @OptionGroup var common: CommonOptions
 
     func run() async throws {
-        try await runToolCLI(toolName: "open_simulator", arguments: [:], json: common.json, output: nil, verbose: common.verbose)
+        verboseLogging = common.verbose
+        applyScope(from: common)
+
+        // 1. Resolve device name
+        let vcsName = computeDefaultDeviceName()
+        let existingConfig = readProjectConfig()
+        let deviceName = common.device ?? existingConfig?.device ?? vcsName
+
+        // 2. Create state directory and write config
+        let dir = ensureStateDir()
+        let config = ProjectConfig(device: deviceName)
+        try writeProjectConfig(config, to: dir)
+        log("Wrote config to \(dir)/config.json")
+
+        // 3. Boot the simulator if not already booted
+        if let name = deviceName {
+            let device = try SimCtlClient.findDeviceByName(name)
+            if let device, device.state != "Booted" {
+                print("Booting simulator \"\(name)\"...")
+                _ = try await SimCtlClient.run("/usr/bin/xcrun", arguments: ["simctl", "boot", device.udid])
+            } else if device == nil {
+                print("No simulator named \"\(name)\" found. Create one with:")
+                print("  xcrun simctl create \"\(name)\" \"iPhone 16\"")
+                throw ExitCode.failure
+            }
+        } else {
+            let device = try SimCtlClient.getBootedDevice()
+            print("Using already-booted simulator: \"\(device.name)\"")
+        }
+
+        // 4. Open Simulator.app
+        _ = try await SimCtlClient.run("/usr/bin/open", arguments: ["-a", "Simulator.app"])
+
+        let displayName = deviceName ?? "default"
+        let scopeLabel = common.local ? "local" : "global"
+        print("Started (\(scopeLabel)): \(displayName)")
+        print("Config: \(dir)/config.json")
     }
 }
 
@@ -1482,7 +1622,7 @@ struct UIDescribeAll: AsyncParsableCommand {
         var args: [String: Value] = [:]
         common.addDevice(to: &args)
         if let depth { args["depth"] = .int(depth) }
-        try await runToolCLI(toolName: "describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1514,7 +1654,7 @@ struct UIDescribePoint: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = ["x": .double(x), "y": .double(y)]
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "describe_point", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "describe_point", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1551,7 +1691,7 @@ struct UITap: AsyncParsableCommand {
         var args: [String: Value] = ["x": .double(x), "y": .double(y)]
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "tap", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "tap", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1581,7 +1721,7 @@ struct UIType: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = ["text": .string(text)]
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "type", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "type", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1632,7 +1772,7 @@ struct UISwipe: AsyncParsableCommand {
         if let delta { args["delta"] = .double(delta) }
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "swipe", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "swipe", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1669,7 +1809,7 @@ struct UIView: AsyncParsableCommand {
         if let output { args["output_path"] = .string(output) }
         if let type { args["type"] = .string(type) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "view", arguments: args, json: common.json, output: output, verbose: common.verbose)
+        try await runToolCLI(toolName: "view", arguments: args, json: common.json, output: output, verbose: common.verbose, common: common)
     }
 }
 
@@ -1695,7 +1835,7 @@ struct InstallApp: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = ["app_path": .string(appPath)]
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "install_app", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "install_app", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1725,7 +1865,7 @@ struct LaunchApp: AsyncParsableCommand {
         var args: [String: Value] = ["bundle_id": .string(bundleID)]
         if terminateRunning { args["terminate_running"] = .bool(true) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "launch_app", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "launch_app", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1753,7 +1893,7 @@ struct Find: AsyncParsableCommand {
     func run() async throws {
         var args = selector.toArguments()
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "find", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "find", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1777,7 +1917,7 @@ struct Exists: AsyncParsableCommand {
     func run() async throws {
         var args = selector.toArguments()
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "exists", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "exists", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1800,7 +1940,7 @@ struct Count: AsyncParsableCommand {
     func run() async throws {
         var args = selector.toArguments()
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "count", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "count", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1824,7 +1964,7 @@ struct Text: AsyncParsableCommand {
     func run() async throws {
         var args = selector.toArguments()
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "text", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "text", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1855,7 +1995,7 @@ struct TapElement: AsyncParsableCommand {
         var args = selector.toArguments()
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "tap_element", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "tap_element", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1884,7 +2024,7 @@ struct Input: AsyncParsableCommand {
         var args = selector.toArguments()
         args["text"] = .string(text)
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "input", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "input", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1915,7 +2055,7 @@ struct Wait: AsyncParsableCommand {
         var args = selector.toArguments()
         if let timeout { args["timeout"] = .double(timeout) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "wait", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "wait", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -1961,7 +2101,7 @@ struct LogShow: AsyncParsableCommand {
         if let process { args["process"] = .string(process) }
         if let style { args["style"] = .string(style) }
         if let level { args["level"] = .string(level) }
-        try await runToolCLI(toolName: "log_show", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "log_show", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
@@ -2006,6 +2146,6 @@ struct LogStream: AsyncParsableCommand {
         if let process { args["process"] = .string(process) }
         if let style { args["style"] = .string(style) }
         if let level { args["level"] = .string(level) }
-        try await runToolCLI(toolName: "log_stream", arguments: args, json: common.json, output: nil, verbose: common.verbose)
+        try await runToolCLI(toolName: "log_stream", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }

@@ -10,13 +10,13 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 
 *Exploring git:* You will, reasonably, often want or be directed to compare code against how joshuayoes/ios-simulator-mcp or facebook/idb do it. Do NOT compare by browsing raw.githubcontent or the github web interface - instead, clone the repos locally. Another useful source of comparison is ldomaradzki/xctree.
 
-*CLI mode:* `ios_simulator_cli <tool> [--option value ...]` — runs tools directly as top-level subcommands. Stderr shows timing/diagnostic logs. Use `ios_simulator_cli mcp` to start the MCP server.
+*CLI mode:* `ios_simulator_cli <tool> [--option value ...]` — the primary interface. Run `ios_simulator_cli start --local --device "<name>"` to set up a project config directory (`.ios-simulator-mcp/`) and boot the simulator. Subsequent commands auto-detect the device from config. Stderr shows timing/diagnostic logs. Use `ios_simulator_cli mcp` to start the MCP server.
 
 *Coordinate math:* agents can navigate the MCP in two ways: via the accessibility tree coordinates, and via their native graphical understanding. To that end, it's important that the pixels of any screenshot tools use the same coordinates and scale as the accessibility tree and the tap tools. Further complicating this is the fact that LLMs have limits on image size. All told, we end up wanting to shrink all of these by a constant, well-behaved scale. If you look through the commit history of joshuayoes/ios-simulator-mcp, you'll see a change that does this resizing; use that as inspiration.
 
 *MCPTestApp Xcode project:* When adding new `.swift` files to MCPTestApp, you must add them to `MCPTestApp.xcodeproj/project.pbxproj` in 4 sections: PBXBuildFile, PBXFileReference, PBXGroup children, and PBXSourcesBuildPhase files. Follow the existing `AA`/`BB` ID convention with the next available number.
 
-*Multiple simulators:* Multiple simulators are often booted. The test app targets a simulator named after the repo dir (`ios-simulator-mcp-swift`). When running smoke tests or CLI commands, pass `--device` explicitly — it accepts either a simulator name or UDID (auto-detected). `--udid` still works as an alias. Example: `--device "ios-simulator-mcp-swift"` or `--device 6C07B68F-...`.
+*Multiple simulators:* Multiple simulators are often booted. The test app targets a simulator named after the repo dir (`ios-simulator-mcp-swift`). Use `ios_simulator_cli start --local --device "ios-simulator-mcp-swift"` to create a project config, then subsequent commands auto-detect. Or pass `--device` explicitly — it accepts either a simulator name or UDID. `--udid` still works as an alias. Add `--local`/`--global` to any command to force which config directory is used.
 
 *Selector commands:* `find`, `exists`, `count`, `text`, `tap_element`, `input`, `wait` — search/interact by `--role`, `--name`, `--identifier`. `describe_all --depth N` limits tree depth. These compose with AND logic.
 
