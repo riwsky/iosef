@@ -81,8 +81,7 @@ func extractDouble(_ value: Value?) -> Double? {
 
 let udidSchema: Value = .object([
     "type": .string("string"),
-    "description": .string("Udid of target, can also be set with the IDB_UDID env var"),
-    "pattern": .string(#"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"#),
+    "description": .string("Name or UDID of target simulator, can also be set with the IDB_UDID env var"),
 ])
 
 // MARK: - Selector schema (reused across selector-based tools)
@@ -159,6 +158,13 @@ func ensureAbsolutePath(_ filePath: String) -> String {
     return defaultDir + "/" + filePath
 }
 
+// MARK: - Device errors
+
+struct DeviceNotBootedError: Error, LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 // MARK: - Simulator cache
 
 /// Caches device info, AXP accessibility bridge, and HID clients.
@@ -182,12 +188,31 @@ actor SimulatorCache {
     // MARK: - Filesystem device cache
 
     /// Resolves device UDID, checking (in order):
-    /// 1. Explicit udid parameter
+    /// 1. Explicit identifier (UUID or simulator name)
     /// 2. In-memory cache (for MCP server mode)
     /// 3. Filesystem cache at /tmp (for CLI mode)
     /// 4. Direct CoreSimulator API call
+    ///
+    /// After resolution, verifies the device is booted and throws a descriptive
+    /// error with boot commands if it's shutdown.
     func resolveDeviceID(_ udid: String?) throws -> String {
-        if let udid = udid { return udid }
+        if let identifier = udid {
+            let device: DeviceInfo
+            if Self.isUUID(identifier) {
+                device = try SimCtlClient.resolveDevice(identifier)
+            } else {
+                // Treat as simulator name
+                guard let found = try SimCtlClient.findDeviceByName(identifier) else {
+                    throw DeviceNotBootedError(
+                        message: "No simulator found with name \"\(identifier)\". "
+                            + "Create one with: xcrun simctl create \"\(identifier)\" \"iPhone 16\""
+                    )
+                }
+                device = found
+            }
+            try Self.validateBooted(device)
+            return device.udid
+        }
 
         let now = ContinuousClock.now
         if let cached = deviceCache,
@@ -197,11 +222,15 @@ actor SimulatorCache {
 
         // Try filesystem cache (survives across CLI invocations)
         if let fsDevice = Self.readDeviceCacheFromDisk() {
+            // Validate the cached device is still booted
+            let device = try SimCtlClient.resolveDevice(fsDevice.udid)
+            try Self.validateBooted(device)
             deviceCache = DeviceCache(udid: fsDevice.udid, name: fsDevice.name, timestamp: now)
             return fsDevice.udid
         }
 
         let device = try SimCtlClient.resolveDevice(nil)
+        try Self.validateBooted(device)
         deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
         Self.writeDeviceCacheToDisk(udid: device.udid, name: device.name)
         return device.udid
@@ -244,6 +273,21 @@ actor SimulatorCache {
         let cached = DiskDeviceCache(udid: udid, name: name)
         guard let data = try? JSONEncoder().encode(cached) else { return }
         FileManager.default.createFile(atPath: diskCachePath, contents: data)
+    }
+
+    /// Checks whether a string is a valid UUID (8-4-4-4-12 hex format).
+    private static func isUUID(_ string: String) -> Bool {
+        UUID(uuidString: string) != nil
+    }
+
+    /// Throws a descriptive error if the device is not booted, suggesting boot commands.
+    private static func validateBooted(_ device: DeviceInfo) throws {
+        guard device.state == "Booted" else {
+            throw DeviceNotBootedError(
+                message: "Simulator \"\(device.name)\" (\(device.udid)) is \(device.state.lowercased()). Boot it with:\n"
+                    + "  xcrun simctl boot \"\(device.name)\" && open -a Simulator"
+            )
+        }
     }
 
     /// Gets or creates an AXPAccessibilityBridge for the given UDID.
@@ -1126,8 +1170,13 @@ struct CommonOptions: ParsableArguments {
     @Flag(name: .long, help: "Output results as JSON")
     var json: Bool = false
 
-    @Option(name: .long, help: "Simulator UDID (auto-detected if omitted)")
-    var udid: String? = nil
+    @Option(name: [.long, .customLong("udid", withSingleDash: false)], help: "Simulator name or UDID (auto-detected if omitted)")
+    var device: String? = nil
+
+    /// Adds the device identifier to a tool arguments dictionary (as "udid" key for MCP compatibility).
+    func addDevice(to args: inout [String: Value]) {
+        if let device { args["udid"] = .string(device) }
+    }
 }
 
 // MARK: - Selector CLI options
@@ -1237,9 +1286,9 @@ struct SimulatorCLI: AsyncParsableCommand {
               coordinate-aligned: 1 pixel = 1 iOS point.
 
             Device Resolution:
-              When --udid is omitted, the CLI auto-detects the booted simulator. If
-              multiple simulators are booted, pass --udid explicitly. The IDB_UDID
-              environment variable is also respected as a fallback.
+              When --device is omitted, the CLI auto-detects the booted simulator. If
+              multiple simulators are booted, pass --device explicitly (name or UDID).
+              The IDB_UDID environment variable is also respected as a fallback.
 
             Environment Variables:
               IDB_UDID                                  Fallback simulator UDID.
@@ -1447,7 +1496,7 @@ struct UIDescribeAll: AsyncParsableCommand {
 
     func run() async throws {
         var args: [String: Value] = [:]
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         if let depth { args["depth"] = .int(depth) }
         try await runToolCLI(toolName: "describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
@@ -1480,7 +1529,7 @@ struct UIDescribePoint: AsyncParsableCommand {
 
     func run() async throws {
         var args: [String: Value] = ["x": .double(x), "y": .double(y)]
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "describe_point", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1517,7 +1566,7 @@ struct UITap: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = ["x": .double(x), "y": .double(y)]
         if let duration { args["duration"] = .double(duration) }
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "tap", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1547,7 +1596,7 @@ struct UIType: AsyncParsableCommand {
 
     func run() async throws {
         var args: [String: Value] = ["text": .string(text)]
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "type", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1598,7 +1647,7 @@ struct UISwipe: AsyncParsableCommand {
         ]
         if let delta { args["delta"] = .double(delta) }
         if let duration { args["duration"] = .double(duration) }
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "swipe", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1635,7 +1684,7 @@ struct UIView: AsyncParsableCommand {
         var args: [String: Value] = [:]
         if let output { args["output_path"] = .string(output) }
         if let type { args["type"] = .string(type) }
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "view", arguments: args, json: common.json, output: output, verbose: common.verbose)
     }
 }
@@ -1661,7 +1710,7 @@ struct InstallApp: AsyncParsableCommand {
 
     func run() async throws {
         var args: [String: Value] = ["app_path": .string(appPath)]
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "install_app", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1691,7 +1740,7 @@ struct LaunchApp: AsyncParsableCommand {
     func run() async throws {
         var args: [String: Value] = ["bundle_id": .string(bundleID)]
         if terminateRunning { args["terminate_running"] = .bool(true) }
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "launch_app", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1719,7 +1768,7 @@ struct Find: AsyncParsableCommand {
 
     func run() async throws {
         var args = selector.toArguments()
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "find", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1743,7 +1792,7 @@ struct Exists: AsyncParsableCommand {
 
     func run() async throws {
         var args = selector.toArguments()
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "exists", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1766,7 +1815,7 @@ struct Count: AsyncParsableCommand {
 
     func run() async throws {
         var args = selector.toArguments()
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "count", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1790,7 +1839,7 @@ struct Text: AsyncParsableCommand {
 
     func run() async throws {
         var args = selector.toArguments()
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "text", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1821,7 +1870,7 @@ struct TapElement: AsyncParsableCommand {
     func run() async throws {
         var args = selector.toArguments()
         if let duration { args["duration"] = .double(duration) }
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "tap_element", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1850,7 +1899,7 @@ struct Input: AsyncParsableCommand {
     func run() async throws {
         var args = selector.toArguments()
         args["text"] = .string(text)
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "input", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1881,7 +1930,7 @@ struct Wait: AsyncParsableCommand {
     func run() async throws {
         var args = selector.toArguments()
         if let timeout { args["timeout"] = .double(timeout) }
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         try await runToolCLI(toolName: "wait", arguments: args, json: common.json, output: nil, verbose: common.verbose)
     }
 }
@@ -1922,7 +1971,7 @@ struct LogShow: AsyncParsableCommand {
 
     func run() async throws {
         var args: [String: Value] = [:]
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         if let last { args["last"] = .string(last) }
         if let predicate { args["predicate"] = .string(predicate) }
         if let process { args["process"] = .string(process) }
@@ -1967,7 +2016,7 @@ struct LogStream: AsyncParsableCommand {
 
     func run() async throws {
         var args: [String: Value] = [:]
-        if let udid = common.udid { args["udid"] = .string(udid) }
+        common.addDevice(to: &args)
         if let duration { args["duration"] = .double(Double(duration)) }
         if let predicate { args["predicate"] = .string(predicate) }
         if let process { args["process"] = .string(process) }

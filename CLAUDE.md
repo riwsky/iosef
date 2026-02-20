@@ -16,7 +16,7 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 
 *MCPTestApp Xcode project:* When adding new `.swift` files to MCPTestApp, you must add them to `MCPTestApp.xcodeproj/project.pbxproj` in 4 sections: PBXBuildFile, PBXFileReference, PBXGroup children, and PBXSourcesBuildPhase files. Follow the existing `AA`/`BB` ID convention with the next available number.
 
-*Multiple simulators:* Multiple simulators are often booted. The test app targets a simulator named after the repo dir (`ios-simulator-mcp-swift`). When running smoke tests or CLI commands, pass `--udid` explicitly. UDID: `xcrun simctl list devices | grep "ios-simulator-mcp-swift"`.
+*Multiple simulators:* Multiple simulators are often booted. The test app targets a simulator named after the repo dir (`ios-simulator-mcp-swift`). When running smoke tests or CLI commands, pass `--device` explicitly — it accepts either a simulator name or UDID (auto-detected). `--udid` still works as an alias. Example: `--device "ios-simulator-mcp-swift"` or `--device 6C07B68F-...`.
 
 *Selector commands:* `find`, `exists`, `count`, `text`, `tap_element`, `input`, `wait` — search/interact by `--role`, `--name`, `--identifier`. `describe_all --depth N` limits tree depth. These compose with AND logic.
 
