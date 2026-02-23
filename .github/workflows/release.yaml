@@ -11,13 +11,16 @@ permissions:
 
 jobs:
   build-and-publish:
-    runs-on: macos-14  # Apple Silicon runner
+    runs-on: macos-15  # Apple Silicon runner with Xcode 16 / Swift 6
     steps:
       - uses: actions/checkout@v4
 
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Swift version
+        run: swift --version
 
       - name: Build universal2 binary
         run: swift build -c release --arch arm64 --arch x86_64
