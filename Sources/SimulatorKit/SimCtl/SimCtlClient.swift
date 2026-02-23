@@ -137,7 +137,9 @@ public enum SimCtlClient {
             let candidates = [name, "\(name)-main"]
             for candidate in candidates {
                 if let device = devices.first(where: { $0.name == candidate && ($0.isAvailable ?? false) }) {
-                    fputs("[SimCtl] No explicit UDID provided; using simulator \"\(device.name)\" (\(device.udid)) inferred from VCS root directory\n", stderr)
+                    if verboseLogging {
+                        fputs("[SimCtl] No explicit UDID provided; using simulator \"\(device.name)\" (\(device.udid)) inferred from VCS root directory\n", stderr)
+                    }
                     return device
                 }
             }
@@ -145,7 +147,9 @@ public enum SimCtlClient {
 
         // Fall back to first booted simulator
         if let booted = devices.first(where: { $0.state == "Booted" }) {
-            fputs("[SimCtl] No explicit UDID provided; using first booted simulator \"\(booted.name)\" (\(booted.udid))\n", stderr)
+            if verboseLogging {
+                fputs("[SimCtl] No explicit UDID provided; using first booted simulator \"\(booted.name)\" (\(booted.udid))\n", stderr)
+            }
             return booted
         }
 

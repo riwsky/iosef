@@ -309,12 +309,14 @@ actor SimulatorCache {
                 device = found
             }
             try Self.validateBooted(device)
+            fputs("[iosef] Using device \"\(device.name)\" (\(device.udid)) — explicit --device flag\n", stderr)
             return device.udid
         }
 
         let now = ContinuousClock.now
         if let cached = deviceCache,
            now - cached.timestamp < deviceTTL {
+            fputs("[iosef] Using device \"\(cached.name ?? cached.udid)\" (\(cached.udid)) — cached from earlier this session\n", stderr)
             return cached.udid
         }
 
@@ -324,6 +326,7 @@ actor SimulatorCache {
             let device = try SimCtlClient.resolveDevice(fsDevice.udid)
             try Self.validateBooted(device)
             deviceCache = DeviceCache(udid: fsDevice.udid, name: fsDevice.name, timestamp: now)
+            fputs("[iosef] Using device \"\(fsDevice.name ?? fsDevice.udid)\" (\(fsDevice.udid)) — cached from recent CLI invocation\n", stderr)
             return fsDevice.udid
         }
 
@@ -331,6 +334,13 @@ actor SimulatorCache {
         try Self.validateBooted(device)
         deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
         Self.writeDeviceCacheToDisk(udid: device.udid, name: device.name)
+        let reason: String
+        if SimCtlClient.defaultDeviceName != nil {
+            reason = "resolved via CoreSimulator (matched project/VCS name)"
+        } else {
+            reason = "first booted simulator"
+        }
+        fputs("[iosef] Using device \"\(device.name)\" (\(device.udid)) — \(reason)\n", stderr)
         return device.udid
     }
 
