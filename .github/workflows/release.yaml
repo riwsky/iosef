@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-and-publish:
-    runs-on: macos-15  # Apple Silicon runner with Xcode 16 / Swift 6
+    runs-on: macos-15  # Apple Silicon runner
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +19,15 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Swift version
-        run: swift --version
+      - name: Select Xcode
+        run: |
+          # Xcode 16.4 has a bug with swiftLanguageVersions in dependencies
+          # when using dual-arch builds. Use 16.2 which ships Swift 6.0.3.
+          ls /Applications/Xcode_16*.app/Contents/Developer || true
+          if [ -d /Applications/Xcode_16.2.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.2.app
+          fi
+          swift --version
 
       - name: Build universal2 binary
         run: swift build -c release --arch arm64 --arch x86_64
