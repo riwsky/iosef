@@ -1248,8 +1248,14 @@ struct SimulatorCLI: AsyncParsableCommand {
               iosef start --local --device "my-sim"
 
               Creates a session directory (.iosef/) with state.json in the current \
-              directory, boots the simulator, and opens Simulator.app. Subsequent \
-              commands auto-detect the device from the session.
+              directory, boots the simulator (creating it if needed), and opens \
+              Simulator.app. Subsequent commands auto-detect the device from the session.
+
+            Lifecycle:
+              iosef start       Create/boot a simulator and set up a session.
+              iosef stop        Shut down, delete the simulator, and remove the session.
+              iosef connect     Associate with an existing simulator.
+              iosef status      Show current simulator and session status.
 
             Session:
               Local:  ./.iosef/   (created with start --local)
@@ -1306,7 +1312,9 @@ struct SimulatorCLI: AsyncParsableCommand {
         groupedSubcommands: [
             CommandGroup(name: "Lifecycle:", subcommands: [
                 Start.self,
-                GetBootedSimID.self,
+                Stop.self,
+                Connect.self,
+                Status.self,
                 InstallApp.self,
                 LaunchApp.self,
             ]),
@@ -1418,34 +1426,14 @@ struct MCPServe: AsyncParsableCommand {
 
 // MARK: - Tool subcommands
 
-struct GetBootedSimID: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "get_booted_sim_id",
-        abstract: "Get the UDID of the currently booted simulator.",
-        discussion: """
-            Queries CoreSimulator for the booted device. Returns the device name and UUID. \
-            Useful for verifying which simulator is active before running other commands.
-
-            Examples:
-              iosef get_booted_sim_id
-              iosef get_booted_sim_id --json
-            """
-    )
-
-    @OptionGroup var common: CommonOptions
-
-    func run() async throws {
-        try await runToolCLI(toolName: "get_booted_sim_id", arguments: [:], json: common.json, output: nil, verbose: common.verbose, common: common)
-    }
-}
-
 struct Start: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "start",
         abstract: "Set up a session and boot the simulator.",
         discussion: """
             Creates a session directory, resolves the target device, boots the \
-            simulator if needed, and opens Simulator.app.
+            simulator if needed, and opens Simulator.app. If no simulator with the \
+            given name exists, one is created automatically.
 
             With --local, creates ./.iosef/ in the current directory. \
             Without --local, uses the global ~/.iosef/ directory.
@@ -1459,10 +1447,17 @@ struct Start: AsyncParsableCommand {
               iosef start --local --device "my-sim"
               iosef start
               iosef start --device 6C07B68F-...
+              iosef start --local --device-type "iPhone 16 Pro" --runtime "iOS 18.4"
             """
     )
 
     @OptionGroup var common: CommonOptions
+
+    @Option(name: .customLong("device-type"), help: "Device type (e.g. \"iPhone 16 Pro\"). Default: latest iPhone. See: xcrun simctl list devicetypes")
+    var deviceType: String? = nil
+
+    @Option(name: .long, help: "Runtime (e.g. \"iOS 18.4\"). Default: latest iOS. See: xcrun simctl list runtimes")
+    var runtime: String? = nil
 
     func run() async throws {
         verboseLogging = common.verbose
@@ -1479,16 +1474,30 @@ struct Start: AsyncParsableCommand {
         try writeSessionState(state, to: dir)
         log("Wrote session to \(dir)/state.json")
 
-        // 3. Boot the simulator if not already booted
+        // 3. Boot the simulator if not already booted, creating if needed
         if let name = deviceName {
-            let device = try SimCtlClient.findDeviceByName(name)
+            var device = try SimCtlClient.findDeviceByName(name)
+            if device == nil {
+                // Create the simulator
+                let resolvedType: String
+                if let deviceType {
+                    resolvedType = deviceType
+                } else {
+                    resolvedType = try await SimCtlClient.getLatestDeviceType()
+                }
+                let resolvedRuntime: String
+                if let runtime {
+                    resolvedRuntime = runtime
+                } else {
+                    resolvedRuntime = try await SimCtlClient.getLatestRuntime()
+                }
+                let udid = try await SimCtlClient.createSimulator(name: name, deviceType: resolvedType, runtime: resolvedRuntime)
+                print("Created simulator \"\(name)\" (\(resolvedType), \(resolvedRuntime))")
+                device = DeviceInfo(name: name, udid: udid, state: "Shutdown", isAvailable: true)
+            }
             if let device, device.state != "Booted" {
                 print("Booting simulator \"\(name)\"...")
                 _ = try await SimCtlClient.run("/usr/bin/xcrun", arguments: ["simctl", "boot", device.udid])
-            } else if device == nil {
-                print("No simulator named \"\(name)\" found. Create one with:")
-                print("  xcrun simctl create \"\(name)\" \"iPhone 16\"")
-                throw ExitCode.failure
             }
         } else {
             let device = try SimCtlClient.getBootedDevice()
@@ -1502,6 +1511,171 @@ struct Start: AsyncParsableCommand {
         let scopeLabel = common.local ? "local" : "global"
         print("Started (\(scopeLabel)): \(displayName)")
         print("Session: \(dir)/state.json")
+    }
+}
+
+struct Stop: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "stop",
+        abstract: "Shut down, delete the simulator, and remove the session.",
+        discussion: """
+            Reads state.json to find the device, shuts it down, deletes it from \
+            the simulator runtime, and removes the session directory.
+
+            If the device is not found (e.g. already deleted), just cleans up the \
+            session directory.
+
+            Examples:
+              iosef stop
+              iosef stop --local
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    func run() async throws {
+        verboseLogging = common.verbose
+        applyScope(from: common)
+
+        let sessionDir = resolveSessionDir()
+        let state = SimulatorKit.readSessionState(from: sessionDir)
+
+        if let deviceName = state?.device {
+            let device = try SimCtlClient.findDeviceByName(deviceName)
+            if let device {
+                if device.state == "Booted" {
+                    print("Shutting down simulator \"\(deviceName)\"...")
+                    try await SimCtlClient.shutdownSimulator(udid: device.udid)
+                }
+                print("Deleting simulator \"\(deviceName)\"...")
+                try await SimCtlClient.deleteSimulator(udid: device.udid)
+                print("Stopped and removed simulator \"\(deviceName)\"")
+            } else {
+                print("Simulator \"\(deviceName)\" not found, cleaning up session only")
+            }
+        } else {
+            print("No device in session state, cleaning up session directory only")
+        }
+
+        // Remove session directory
+        let fm = FileManager.default
+        if fm.fileExists(atPath: sessionDir) {
+            try fm.removeItem(atPath: sessionDir)
+            print("Removed session: \(sessionDir)")
+        }
+    }
+}
+
+struct Connect: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "connect",
+        abstract: "Associate with an existing simulator.",
+        discussion: """
+            Looks up a simulator by name or UDID, boots it if needed, opens \
+            Simulator.app, and creates a session pointing to it.
+
+            Examples:
+              iosef connect "iPhone 16"
+              iosef connect 6C07B68F-... --local
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    @Argument(help: "Simulator name or UDID")
+    var nameOrUDID: String
+
+    func run() async throws {
+        verboseLogging = common.verbose
+        applyScope(from: common)
+
+        guard let device = try SimCtlClient.findDeviceByNameOrUDID(nameOrUDID) else {
+            fputs("Error: No simulator found matching \"\(nameOrUDID)\"\n", stderr)
+            throw ExitCode.failure
+        }
+
+        // Boot if needed
+        if device.state != "Booted" {
+            print("Booting simulator \"\(device.name)\"...")
+            _ = try await SimCtlClient.run("/usr/bin/xcrun", arguments: ["simctl", "boot", device.udid])
+        }
+
+        // Open Simulator.app
+        _ = try await SimCtlClient.run("/usr/bin/open", arguments: ["-a", "Simulator.app"])
+
+        // Create session
+        let dir = ensureSessionDir()
+        let state = SessionState(device: device.name)
+        try writeSessionState(state, to: dir)
+
+        print("Connected to \"\(device.name)\" (\(device.udid))")
+        print("Session: \(dir)/state.json")
+    }
+}
+
+struct Status: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Show current simulator and session status.",
+        discussion: """
+            Displays the active simulator's name, UDID, state, and session info. \
+            Use --json for machine-readable output.
+
+            Examples:
+              iosef status
+              iosef status --json
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    func run() async throws {
+        verboseLogging = common.verbose
+        applyScope(from: common)
+        setupGlobals()
+
+        // Determine session info
+        let sessionDir = resolveSessionDir()
+        let sessionState = SimulatorKit.readSessionState(from: sessionDir)
+        let sessionLabel: String
+        if activeScope == .local || sessionDir.hasSuffix(".iosef") {
+            sessionLabel = "local (\(sessionDir))"
+        } else if sessionDir.hasPrefix(NSHomeDirectory()) && sessionDir.contains("/.iosef") {
+            sessionLabel = "global (\(sessionDir))"
+        } else {
+            sessionLabel = "none"
+        }
+
+        // Try to resolve device
+        let device: DeviceInfo?
+        if let deviceName = common.device {
+            device = try SimCtlClient.findDeviceByNameOrUDID(deviceName)
+        } else if let sessionDevice = sessionState?.device {
+            device = try SimCtlClient.findDeviceByName(sessionDevice)
+        } else {
+            device = try? SimCtlClient.getBootedDevice()
+        }
+
+        if common.json {
+            var info: [String: Any] = [:]
+            if let device {
+                info["device"] = device.name
+                info["udid"] = device.udid
+                info["state"] = device.state
+            }
+            info["session"] = sessionLabel
+            let data = try JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys])
+            print(String(data: data, encoding: .utf8)!)
+        } else {
+            if let device {
+                print("Device:  \(device.name)")
+                print("UDID:    \(device.udid)")
+                print("State:   \(device.state)")
+            } else {
+                print("Device:  (none)")
+            }
+            print("Session: \(sessionLabel)")
+        }
     }
 }
 

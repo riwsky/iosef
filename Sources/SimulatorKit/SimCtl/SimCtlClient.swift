@@ -161,6 +161,88 @@ public enum SimCtlClient {
         try resolveDevice(udid).udid
     }
 
+    // MARK: - Device lookup by name or UDID
+
+    /// Finds a device by name (via `findDeviceByName`) or by UDID.
+    public static func findDeviceByNameOrUDID(_ identifier: String) throws -> DeviceInfo? {
+        // Try name first
+        if let device = try findDeviceByName(identifier) {
+            return device
+        }
+        // Try UDID
+        let devices = try getAllDevices()
+        return devices.first(where: { $0.udid.caseInsensitiveCompare(identifier) == .orderedSame })
+    }
+
+    // MARK: - Simulator creation/deletion via simctl
+
+    /// Returns the identifier of the latest iPhone device type (e.g. `com.apple.CoreSimulator.SimDeviceType.iPhone-16`).
+    public static func getLatestDeviceType() async throws -> String {
+        let result = try await run("/usr/bin/xcrun", arguments: ["simctl", "list", "devicetypes", "-j"])
+        guard let data = result.stdout.data(using: .utf8) else {
+            throw SimCtlError.parseError("Failed to parse devicetypes JSON")
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let deviceTypes = json?["devicetypes"] as? [[String: Any]] else {
+            throw SimCtlError.parseError("Missing 'devicetypes' key in simctl output")
+        }
+        // Find the last iPhone device type
+        guard let last = deviceTypes.last(where: { ($0["identifier"] as? String)?.contains("iPhone") == true }),
+              let identifier = last["identifier"] as? String else {
+            throw SimCtlError.parseError("No iPhone device type found")
+        }
+        return identifier
+    }
+
+    /// Returns the identifier of the latest available iOS runtime (e.g. `com.apple.CoreSimulator.SimRuntime.iOS-18-4`).
+    public static func getLatestRuntime() async throws -> String {
+        let result = try await run("/usr/bin/xcrun", arguments: ["simctl", "list", "runtimes", "-j"])
+        guard let data = result.stdout.data(using: .utf8) else {
+            throw SimCtlError.parseError("Failed to parse runtimes JSON")
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let runtimes = json?["runtimes"] as? [[String: Any]] else {
+            throw SimCtlError.parseError("Missing 'runtimes' key in simctl output")
+        }
+        // Find the last available iOS runtime
+        guard let last = runtimes.last(where: {
+            ($0["isAvailable"] as? Bool) == true &&
+            ($0["identifier"] as? String)?.contains("iOS") == true
+        }), let identifier = last["identifier"] as? String else {
+            throw SimCtlError.parseError("No available iOS runtime found")
+        }
+        return identifier
+    }
+
+    /// Creates a new simulator and returns its UDID.
+    public static func createSimulator(name: String, deviceType: String, runtime: String) async throws -> String {
+        let result = try await run("/usr/bin/xcrun", arguments: ["simctl", "create", name, deviceType, runtime])
+        let udid = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !udid.isEmpty else {
+            throw SimCtlError.parseError("simctl create returned empty UDID")
+        }
+        return udid
+    }
+
+    /// Shuts down a simulator. Ignores errors if already shutdown.
+    public static func shutdownSimulator(udid: String) async throws {
+        do {
+            _ = try await run("/usr/bin/xcrun", arguments: ["simctl", "shutdown", udid])
+        } catch let error as SimCtlError {
+            // Ignore "already shutdown" errors
+            if case .commandFailed(_, _, _, let stderr) = error,
+               stderr.lowercased().contains("current state: shutdown") {
+                return
+            }
+            throw error
+        }
+    }
+
+    /// Deletes a simulator.
+    public static func deleteSimulator(udid: String) async throws {
+        _ = try await run("/usr/bin/xcrun", arguments: ["simctl", "delete", udid])
+    }
+
     public enum SimCtlError: Error, LocalizedError {
         case commandFailed(command: String, args: [String], exitCode: Int32, stderr: String)
         case noBootedSimulator
