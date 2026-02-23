@@ -55,61 +55,29 @@ func withTimeout<T: Sendable>(
     }
 }
 
-// MARK: - Project config
-
-/// Which state directory to use: local (./.ios-simulator-mcp/) or global (~/.ios-simulator-mcp/).
-enum ScopeMode {
-    case auto      // local if ./.ios-simulator-mcp/config.json exists, else global
-    case local     // force ./.ios-simulator-mcp/
-    case global    // force ~/.ios-simulator-mcp/
-}
-
-/// Contents of config.json.
-struct ProjectConfig: Codable {
-    var device: String?
-}
+// MARK: - Project config (types from SimulatorKit, wrappers for activeScope default)
 
 /// Resolved scope mode for this invocation (set by applyScope before dispatch).
 nonisolated(unsafe) var activeScope: ScopeMode = .auto
 
-/// Returns the active state directory path based on scope mode.
-/// Does NOT create the directory — callers that write must ensure it exists first.
+/// Convenience: resolveStateDir using activeScope default.
 func resolveStateDir(_ scope: ScopeMode = activeScope) -> String {
-    let localDir = FileManager.default.currentDirectoryPath + "/.ios-simulator-mcp"
-    let globalDir = NSHomeDirectory() + "/.ios-simulator-mcp"
-
-    switch scope {
-    case .local:
-        return localDir
-    case .global:
-        return globalDir
-    case .auto:
-        let configPath = localDir + "/config.json"
-        if FileManager.default.fileExists(atPath: configPath) {
-            return localDir
-        }
-        return globalDir
-    }
+    SimulatorKit.resolveStateDir(scope)
 }
 
-/// Ensures the state directory (and cache/ subdirectory) exist.
+/// Convenience: ensureStateDir using activeScope default.
 @discardableResult
 func ensureStateDir(_ scope: ScopeMode = activeScope) -> String {
-    let dir = resolveStateDir(scope)
-    let cacheDir = dir + "/cache"
-    try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
-    return dir
+    SimulatorKit.ensureStateDir(scope)
 }
 
 /// Reads config.json from the active state directory, or nil if absent/invalid.
 func readProjectConfig() -> ProjectConfig? {
     let dir = resolveStateDir()
-    let configPath = dir + "/config.json"
-    guard let data = FileManager.default.contents(atPath: configPath),
-          let config = try? JSONDecoder().decode(ProjectConfig.self, from: data) else {
+    guard let config = SimulatorKit.readProjectConfig(from: dir) else {
         return nil
     }
-    log("Loaded config from \(configPath)")
+    log("Loaded config from \(dir)/config.json")
     return config
 }
 
@@ -124,15 +92,6 @@ func applyProjectConfig() {
         SimCtlClient.defaultDeviceName = device
         log("Config: device = \(device)")
     }
-}
-
-/// Writes a config.json to the given state directory.
-func writeProjectConfig(_ config: ProjectConfig, to dir: String) throws {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = try encoder.encode(config)
-    let configPath = dir + "/config.json"
-    FileManager.default.createFile(atPath: configPath, contents: data)
 }
 
 /// Applies scope mode from parsed CommonOptions flags.
@@ -322,12 +281,16 @@ actor SimulatorCache {
 
         // Try filesystem cache (survives across CLI invocations)
         if let fsDevice = Self.readDeviceCacheFromDisk() {
-            // Validate the cached device is still booted
-            let device = try SimCtlClient.resolveDevice(fsDevice.udid)
-            try Self.validateBooted(device)
-            deviceCache = DeviceCache(udid: fsDevice.udid, name: fsDevice.name, timestamp: now)
-            fputs("[iosef] Using device \"\(fsDevice.name ?? fsDevice.udid)\" (\(fsDevice.udid)) — cached from recent CLI invocation\n", stderr)
-            return fsDevice.udid
+            // Skip stale cache if it doesn't match the configured default device
+            let entry = DeviceCacheEntry(udid: fsDevice.udid, name: fsDevice.name)
+            if entry.matches(defaultDeviceName: SimCtlClient.defaultDeviceName) {
+                // Validate the cached device is still booted
+                let device = try SimCtlClient.resolveDevice(fsDevice.udid)
+                try Self.validateBooted(device)
+                deviceCache = DeviceCache(udid: fsDevice.udid, name: fsDevice.name, timestamp: now)
+                fputs("[iosef] Using device \"\(fsDevice.name ?? fsDevice.udid)\" (\(fsDevice.udid)) — cached from recent CLI invocation\n", stderr)
+                return fsDevice.udid
+            }
         }
 
         let device = try SimCtlClient.resolveDevice(nil)
