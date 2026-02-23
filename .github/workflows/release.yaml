@@ -22,11 +22,8 @@ jobs:
       - name: Select Xcode
         run: |
           # Xcode 16.4 has a bug with swiftLanguageVersions in dependencies
-          # when using dual-arch builds. Use 16.2 which ships Swift 6.0.3.
-          ls /Applications/Xcode_16*.app/Contents/Developer || true
-          if [ -d /Applications/Xcode_16.2.app ]; then
-            sudo xcode-select -s /Applications/Xcode_16.2.app
-          fi
+          # when using dual-arch builds. Use 16.3 (Swift 6.1.0).
+          sudo xcode-select -s /Applications/Xcode_16.3.app
           swift --version
 
       - name: Build universal2 binary
