@@ -6,6 +6,6 @@ cd "$(dirname "$0")/.."
 swift build -c release
 
 mkdir -p ~/.local/bin
-cp .build/release/ios_simulator_cli ~/.local/bin/
+cp .build/release/iosef ~/.local/bin/
 
-echo "Build succeeded and installed to ~/.local/bin/ios_simulator_cli"
+echo "Build succeeded and installed to ~/.local/bin/iosef"

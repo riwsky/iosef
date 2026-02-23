@@ -1,4 +1,4 @@
-# ios-simulator-mcp-swift
+# iosef
 
 A fast, native Swift [MCP server](https://modelcontextprotocol.io/) and CLI for controlling the iOS Simulator. Supports tapping, swiping, typing, screenshots, and reading the accessibility tree — all without idb or any companion app.
 

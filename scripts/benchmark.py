@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-SWIFT_BIN_DEFAULT = ".build/release/ios_simulator_cli"
+SWIFT_BIN_DEFAULT = ".build/release/iosef"
 NODE_SERVER_DEFAULT = "node /Users/wcybriwsky/build/ios-simulator-mcp/build/index.js"
 IDB_DEFAULT = "/Users/wcybriwsky/.local/bin/idb"
 RESULTS_DIR = Path("/tmp/ios-sim-mcp-bench")
@@ -166,7 +166,7 @@ def build_baseline(rev: str, *, verbose: bool = False) -> tuple[Path, str]:
     info("Building baseline binary (swift build -c release)...")
     _swift_build("Baseline", cwd=workspace_dir, verbose=verbose)
 
-    binary = workspace_dir / ".build" / "release" / "ios_simulator_cli"
+    binary = workspace_dir / ".build" / "release" / "iosef"
     if not binary.exists():
         error(f"Baseline binary not found at {binary}")
         cleanup_baseline()
@@ -580,7 +580,7 @@ def main(
                 current_fut.result()
                 baseline_fut.result()
 
-            baseline_bin = baseline_workspace / ".build" / "release" / "ios_simulator_cli"
+            baseline_bin = baseline_workspace / ".build" / "release" / "iosef"
             if not baseline_bin.exists():
                 error(f"Baseline binary not found at {baseline_bin}")
                 cleanup_baseline()

@@ -3,7 +3,7 @@
 *2026-02-18T21:29:53Z by Showboat 0.6.0*
 <!-- showboat-id: 64a9ff36-a3c2-480a-a7dc-3ad92e7f28c7 -->
 
-**ios-simulator-mcp-swift** now supports selector-based commands that let agents find, query, and interact with accessibility elements by role, name, or identifier — no manual coordinate extraction needed.
+**iosef** now supports selector-based commands that let agents find, query, and interact with accessibility elements by role, name, or identifier — no manual coordinate extraction needed.
 
 This demo contrasts the old coordinate-based workflow with the new selector commands, running against MCPTestApp.
 
@@ -30,7 +30,7 @@ Target UDID: 6C07B68F-054D-434D-B5D7-6C52DCE7D78B
 To tap a button, agents had to: (1) dump the full AX tree, (2) visually parse it to find the element and its coordinates, (3) tap those coordinates.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli describe_all --udid $UDID 2>/dev/null | head -8
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef describe_all --udid $UDID 2>/dev/null | head -8
 ```
 
 ```output
@@ -47,7 +47,7 @@ AXApplication "MCPTestApp" (197±197, 426±295)
 The agent must parse the tree to find "Row 0 Column 0" at center (38, 225), then issue a separate tap:
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli tap --x 38 --y 225 --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef tap --x 38 --y 225 --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -61,7 +61,7 @@ That's **3 steps** (describe_all → parse → tap) for one interaction.
 `find` searches the AX tree by selector and returns only matching nodes.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli find --role AXButton --name "Row 0" --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef find --role AXButton --name "Row 0" --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -78,7 +78,7 @@ AXButton "Row 0 Column 5" (355±31, 225±10)
 `tap_element` combines find + tap into one command. No coordinate extraction needed.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli tap_element --name "Row 0 Column 1" --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef tap_element --name "Row 0 Column 1" --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -88,7 +88,7 @@ Tapped element at (101, 225)
 That's **1 step** instead of 3. Let's verify the counter incremented:
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli view --udid $UDID --output /tmp/showboat_sel_01_tap_element.png 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef view --udid $UDID --output /tmp/showboat_sel_01_tap_element.png 2>/dev/null
 ```
 
 ```output
@@ -106,7 +106,7 @@ Screenshot saved to /tmp/showboat_sel_01_tap_element.png
 Quick boolean and numeric queries without parsing tree output.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli exists --name "Tap count" --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef exists --name "Tap count" --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -114,7 +114,7 @@ true
 ```
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli count --role AXButton --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef count --role AXButton --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -126,7 +126,7 @@ UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli co
 Get the text content of an element as plain text, without parsing markdown output.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli text --name "Tap count" --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef text --name "Tap count" --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -138,7 +138,7 @@ Tap count 2
 Typing into a field required tap → sleep → type, with manual coordinates.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli tap --x 222 --y 524 --udid $UDID 2>/dev/null && sleep 0.3 && .build/release/ios_simulator_cli type --text "manual" --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef tap --x 222 --y 524 --udid $UDID 2>/dev/null && sleep 0.3 && .build/release/iosef type --text "manual" --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -151,7 +151,7 @@ Typed successfully
 `input` combines find + tap + type. One command, no coordinates.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli input --role AXTextField --text "hello from selectors" --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef input --role AXTextField --text "hello from selectors" --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -159,7 +159,7 @@ Tapped (221, 524) and typed "hello from selectors"
 ```
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli view --udid $UDID --output /tmp/showboat_sel_02_input.png 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef view --udid $UDID --output /tmp/showboat_sel_02_input.png 2>/dev/null
 ```
 
 ```output
@@ -177,7 +177,7 @@ Screenshot saved to /tmp/showboat_sel_02_input.png
 After an interaction, `wait` polls until the expected element appears. Let's tap another button and wait for the counter to update.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli tap_element --name "Row 0 Column 2" --udid $UDID 2>/dev/null && .build/release/ios_simulator_cli wait --name "Tap count 3" --timeout 5 --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef tap_element --name "Row 0 Column 2" --udid $UDID 2>/dev/null && .build/release/iosef wait --name "Tap count 3" --timeout 5 --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -190,7 +190,7 @@ AXStaticText "Tap count 3" (45±31, 187±11)
 Limit tree depth to see just the top-level structure.
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli describe_all --depth 0 --udid $UDID 2>/dev/null
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef describe_all --depth 0 --udid $UDID 2>/dev/null
 ```
 
 ```output
@@ -200,7 +200,7 @@ AXApplication "MCPTestApp" (197±197, 426±295)
 Depth 0 shows only the root. Depth 1 shows direct children too:
 
 ```bash
-UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/ios_simulator_cli describe_all --depth 1 --udid $UDID 2>/dev/null | head -6
+UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef describe_all --depth 1 --udid $UDID 2>/dev/null | head -6
 ```
 
 ```output

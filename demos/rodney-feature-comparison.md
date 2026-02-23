@@ -1,6 +1,6 @@
 # Rodney Feature Comparison — New CLI Commands
 
-Comparison between [rodney](https://github.com/simonw/rodney) (Chrome automation CLI) and **ios-simulator-mcp-swift**, with recommendations for new commands.
+Comparison between [rodney](https://github.com/simonw/rodney) (Chrome automation CLI) and **iosef**, with recommendations for new commands.
 
 ## Feature Matrix
 
@@ -69,7 +69,7 @@ Extend `TreeSerializer` with `find(matching:maxDepth:) -> [TreeNode]` to walk th
 **1. `find`** — Search AX tree by role/name/identifier
 
 ```
-ios_simulator_cli find [--role ROLE] [--name NAME] [--id ID] [--first] [--json] [--udid UDID]
+iosef find [--role ROLE] [--name NAME] [--id ID] [--first] [--json] [--udid UDID]
 ```
 
 Returns matching nodes with frames. Exit code 0 if matches, 1 if none. `--first` returns only the first match. Foundation for all other selector-based commands.
@@ -77,24 +77,24 @@ Returns matching nodes with frames. Exit code 0 if matches, 1 if none. `--first`
 Example:
 ```bash
 # Find all buttons
-ios_simulator_cli find --role button
+iosef find --role button
 
 # Find a specific button by label
-ios_simulator_cli find --role button --name "Submit" --first
+iosef find --role button --name "Submit" --first
 
 # Machine-readable for scripting
-ios_simulator_cli find --role textField --json
+iosef find --role textField --json
 ```
 
 **2. `exists`** — Check element existence
 
 ```
-ios_simulator_cli exists [--role ROLE] [--name NAME] [--id ID] [--udid UDID]
+iosef exists [--role ROLE] [--name NAME] [--id ID] [--udid UDID]
 ```
 
 Prints `true`/`false`, exit code 0/1. Enables shell conditionals:
 ```bash
-if ios_simulator_cli exists --role button --name Submit; then
+if iosef exists --role button --name Submit; then
   echo "Submit button found"
 fi
 ```
@@ -102,7 +102,7 @@ fi
 **3. `count`** — Count matching elements
 
 ```
-ios_simulator_cli count [--role ROLE] [--name NAME] [--id ID] [--udid UDID]
+iosef count [--role ROLE] [--name NAME] [--id ID] [--udid UDID]
 ```
 
 Prints integer count. Useful for verifying list lengths, grid sizes, etc.
@@ -110,46 +110,46 @@ Prints integer count. Useful for verifying list lengths, grid sizes, etc.
 **4. `text`** — Extract text/value from element
 
 ```
-ios_simulator_cli text [--role ROLE] [--name NAME] [--id ID] [--udid UDID]
+iosef text [--role ROLE] [--name NAME] [--id ID] [--udid UDID]
 ```
 
 Prints label, title, or value of first match. Enables:
 ```bash
-COUNTER=$(ios_simulator_cli text --role staticText --name "Tap count")
+COUNTER=$(iosef text --role staticText --name "Tap count")
 echo "Current count: $COUNTER"
 ```
 
 **5. `tap_element`** — Tap by selector (no coordinates needed)
 
 ```
-ios_simulator_cli tap_element [--role ROLE] [--name NAME] [--id ID] [--duration D] [--udid UDID]
+iosef tap_element [--role ROLE] [--name NAME] [--id ID] [--duration D] [--udid UDID]
 ```
 
 Finds element -> computes center from frame -> sends tap via IndigoHID. Eliminates the "read AX tree, parse coordinates, tap" loop:
 ```bash
 # Before: 3-step process
-COORDS=$(ios_simulator_cli find --role button --name Submit --first --json | jq '.x, .y')
-ios_simulator_cli tap --x ... --y ...
+COORDS=$(iosef find --role button --name Submit --first --json | jq '.x, .y')
+iosef tap --x ... --y ...
 
 # After: 1 command
-ios_simulator_cli tap_element --role button --name Submit
+iosef tap_element --role button --name Submit
 ```
 
 **6. `input`** — Tap field by selector, then type
 
 ```
-ios_simulator_cli input [--role ROLE] [--name NAME] [--id ID] --text TEXT [--udid UDID]
+iosef input [--role ROLE] [--name NAME] [--id ID] --text TEXT [--udid UDID]
 ```
 
 Composes: find element -> tap center -> brief delay -> type text. Replaces the common 3-command pattern:
 ```bash
 # Before
-ios_simulator_cli tap --x 222 --y 524
+iosef tap --x 222 --y 524
 sleep 0.3
-ios_simulator_cli type --text "hello"
+iosef type --text "hello"
 
 # After
-ios_simulator_cli input --id text_field --text "hello"
+iosef input --id text_field --text "hello"
 ```
 
 ### Tier 2 — Robustness features
@@ -157,14 +157,14 @@ ios_simulator_cli input --id text_field --text "hello"
 **7. `wait`** — Wait for element to appear
 
 ```
-ios_simulator_cli wait [--role ROLE] [--name NAME] [--id ID] [--timeout SECS] [--udid UDID]
+iosef wait [--role ROLE] [--name NAME] [--id ID] [--timeout SECS] [--udid UDID]
 ```
 
 Polls AX tree every 250ms until match or timeout (default 10s). Exit 0=found, 2=timeout. Critical for animations, navigation transitions, and async state changes:
 ```bash
-ios_simulator_cli tap_element --role button --name "Load Data"
-ios_simulator_cli wait --role staticText --name "Results" --timeout 15
-ios_simulator_cli view --output /tmp/results.png
+iosef tap_element --role button --name "Load Data"
+iosef wait --role staticText --name "Results" --timeout 15
+iosef view --output /tmp/results.png
 ```
 
 Rodney's `wait` is its most-used command for test scripting — agents constantly need to wait for UI state to settle.
@@ -179,7 +179,7 @@ Limits AX tree recursion depth. Useful for large UIs where agents only need top-
 
 Rodney distinguishes exit code 1 (check failed, e.g. element not found) from exit code 2 (error, e.g. bad arguments, timeout). This is valuable for shell scripting:
 ```bash
-ios_simulator_cli exists --role button --name Submit
+iosef exists --role button --name Submit
 case $? in
   0) echo "Found" ;;
   1) echo "Not found" ;;
@@ -195,7 +195,7 @@ We should adopt this convention across all new commands.
 |---|---|
 | `Sources/SimulatorKit/Accessibility/AXSelector.swift` | **New file** — selector struct + matching logic |
 | `Sources/SimulatorKit/Accessibility/TreeSerializer.swift` | Add `find(matching:maxDepth:)` and `flatten()` methods |
-| `Sources/ios_simulator_cli/SimulatorMCPCommand.swift` | New `AsyncParsableCommand` structs + MCP tool definitions |
+| `Sources/iosef/SimulatorMCPCommand.swift` | New `AsyncParsableCommand` structs + MCP tool definitions |
 
 ## Implementation Notes
 

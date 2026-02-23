@@ -11,7 +11,7 @@ import SimulatorKit
 func log(_ msg: String) {
     guard verboseLogging else { return }
     let ts = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
-    FileHandle.standardError.write(Data("[ios_simulator_cli \(ts)] \(msg)\n".utf8))
+    FileHandle.standardError.write(Data("[iosef \(ts)] \(msg)\n".utf8))
 }
 
 func withTimeout<T: Sendable>(
@@ -148,7 +148,7 @@ func applyScope(from common: CommonOptions) {
 
 let serverVersion = "3.0.0"
 let filteredTools: Set<String> = {
-    guard let env = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_FILTERED_TOOLS"] else {
+    guard let env = ProcessInfo.processInfo.environment["IOSEF_FILTERED_TOOLS"] else {
         return []
     }
     return Set(env.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
@@ -245,7 +245,7 @@ func ensureAbsolutePath(_ filePath: String) -> String {
     }
 
     var defaultDir = NSHomeDirectory() + "/Downloads"
-    if let customDir = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_DEFAULT_OUTPUT_DIR"] {
+    if let customDir = ProcessInfo.processInfo.environment["IOSEF_DEFAULT_OUTPUT_DIR"] {
         if customDir.hasPrefix("~/") {
             defaultDir = NSHomeDirectory() + "/" + String(customDir.dropFirst(2))
         } else {
@@ -1200,7 +1200,7 @@ func setupGlobals() {
     // Config file overrides VCS heuristic (but not explicit --device flags)
     applyProjectConfig()
 
-    if let timeoutStr = ProcessInfo.processInfo.environment["IOS_SIMULATOR_MCP_TIMEOUT"],
+    if let timeoutStr = ProcessInfo.processInfo.environment["IOSEF_TIMEOUT"],
        let timeoutSecs = Double(timeoutStr), timeoutSecs > 0 {
         SimCtlClient.defaultTimeout = .seconds(Int64(timeoutSecs))
     }
@@ -1321,7 +1321,7 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
 @main
 struct SimulatorCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ios_simulator_cli",
+        commandName: "iosef",
         abstract: "Control iOS Simulator — tap, type, swipe, inspect, and screenshot.",
         discussion: """
             Tap, type, swipe, inspect accessibility elements, and capture screenshots \
@@ -1329,7 +1329,7 @@ struct SimulatorCLI: AsyncParsableCommand {
             transport) for agent integration.
 
             Getting Started:
-              ios_simulator_cli start --local --device "my-sim"
+              iosef start --local --device "my-sim"
 
               This creates .ios-simulator-mcp/config.json in the current directory, \
               boots the simulator, and opens Simulator.app. Subsequent commands \
@@ -1356,29 +1356,29 @@ struct SimulatorCLI: AsyncParsableCommand {
               Pass --device explicitly (name or UDID) to override.
 
             Environment Variables:
-              IOS_SIMULATOR_MCP_DEFAULT_OUTPUT_DIR      Default directory for screenshots.
-              IOS_SIMULATOR_MCP_TIMEOUT                 Override default timeout (seconds).
-              IOS_SIMULATOR_MCP_FILTERED_TOOLS          Comma-separated tools to hide from MCP.
+              IOSEF_DEFAULT_OUTPUT_DIR      Default directory for screenshots.
+              IOSEF_TIMEOUT                 Override default timeout (seconds).
+              IOSEF_FILTERED_TOOLS          Comma-separated tools to hide from MCP.
 
             Example — selector-based (preferred):
               # Tap a button by name
-              ios_simulator_cli tap_element --name "Sign In"
+              iosef tap_element --name "Sign In"
 
               # Type into a field by role
-              ios_simulator_cli input --role AXTextField --text "hello"
+              iosef input --role AXTextField --text "hello"
 
               # Wait for a screen to load
-              ios_simulator_cli wait --name "Welcome"
+              iosef wait --name "Welcome"
 
               # Check if an element exists
-              ios_simulator_cli exists --role AXButton --name "Submit"
+              iosef exists --role AXButton --name "Submit"
 
             Example — coordinate-based (when elements lack labels):
-              ios_simulator_cli describe_all
-              ios_simulator_cli tap --x 195 --y 420
-              ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
+              iosef describe_all
+              iosef tap --x 195 --y 420
+              iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 
-              See 'ios_simulator_cli help <subcommand>' for detailed help.
+              See 'iosef help <subcommand>' for detailed help.
 
             Exit Codes:
               0  Success.
@@ -1438,7 +1438,7 @@ struct MCPServe: AsyncParsableCommand {
         setupGlobals()
 
         let server = Server(
-            name: "ios-simulator",
+            name: "iosef",
             version: serverVersion,
             capabilities: .init(tools: .init(listChanged: false))
         )
@@ -1511,8 +1511,8 @@ struct GetBootedSimID: AsyncParsableCommand {
             Useful for verifying which simulator is active before running other commands.
 
             Examples:
-              ios_simulator_cli get_booted_sim_id
-              ios_simulator_cli get_booted_sim_id --json
+              iosef get_booted_sim_id
+              iosef get_booted_sim_id --json
             """
     )
 
@@ -1540,9 +1540,9 @@ struct Start: AsyncParsableCommand {
               3. VCS root directory name
 
             Examples:
-              ios_simulator_cli start --local --device "my-sim"
-              ios_simulator_cli start
-              ios_simulator_cli start --device 6C07B68F-...
+              iosef start --local --device "my-sim"
+              iosef start
+              iosef start --device 6C07B68F-...
             """
     )
 
@@ -1606,10 +1606,10 @@ struct UIDescribeAll: AsyncParsableCommand {
             output. Combine with jq to filter:
 
             Examples:
-              ios_simulator_cli describe_all
-              ios_simulator_cli describe_all --depth 2
-              ios_simulator_cli describe_all --json
-              ios_simulator_cli describe_all --json | jq '.. | objects | select(.role == "button")'
+              iosef describe_all
+              iosef describe_all --depth 2
+              iosef describe_all --json
+              iosef describe_all --json | jq '.. | objects | select(.role == "button")'
             """
     )
 
@@ -1637,9 +1637,9 @@ struct UIDescribePoint: AsyncParsableCommand {
             Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
             Examples:
-              ios_simulator_cli describe_point --x 200 --y 400
-              ios_simulator_cli describe_point --x 200 --y 400 --json
-              ios_simulator_cli describe_point --x 200 --y 400 --json | jq '.content[0].text'
+              iosef describe_point --x 200 --y 400
+              iosef describe_point --x 200 --y 400 --json
+              iosef describe_point --x 200 --y 400 --json | jq '.content[0].text'
             """
     )
 
@@ -1671,8 +1671,8 @@ struct UITap: AsyncParsableCommand {
             For long-press, pass --duration (in seconds).
 
             Examples:
-              ios_simulator_cli tap --x 200 --y 400
-              ios_simulator_cli tap --x 100 --y 300 --duration 0.5
+              iosef tap --x 200 --y 400
+              iosef tap --x 100 --y 300 --duration 0.5
             """
     )
 
@@ -1708,8 +1708,8 @@ struct UIType: AsyncParsableCommand {
             Tap a text field first with tap to ensure it has focus.
 
             Examples:
-              ios_simulator_cli type --text hello
-              ios_simulator_cli type --text "Hello World"
+              iosef type --text hello
+              iosef type --text "Hello World"
             """
     )
 
@@ -1737,8 +1737,8 @@ struct UISwipe: AsyncParsableCommand {
             Use --duration to control speed (in seconds).
 
             Examples:
-              ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
-              ios_simulator_cli swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
+              iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
+              iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
             """
     )
 
@@ -1790,9 +1790,9 @@ struct UIView: AsyncParsableCommand {
             pixels correspond to iOS points.
 
             Examples:
-              ios_simulator_cli view
-              ios_simulator_cli view --output /tmp/screen.jpg
-              ios_simulator_cli view --output /tmp/screen.png --type png
+              iosef view
+              iosef view --output /tmp/screen.jpg
+              iosef view --output /tmp/screen.png --type png
             """
     )
 
@@ -1822,8 +1822,8 @@ struct InstallApp: AsyncParsableCommand {
             (faster than simctl install). Supports .app directories and .ipa files.
 
             Examples:
-              ios_simulator_cli install_app --app-path /path/to/MyApp.app
-              ios_simulator_cli install_app --app-path ./build/MyApp.app
+              iosef install_app --app-path /path/to/MyApp.app
+              iosef install_app --app-path ./build/MyApp.app
             """
     )
 
@@ -1848,8 +1848,8 @@ struct LaunchApp: AsyncParsableCommand {
             Optionally terminates the app first if it's already running.
 
             Examples:
-              ios_simulator_cli launch_app --bundle-id com.apple.mobilesafari
-              ios_simulator_cli launch_app --bundle-id com.example.myapp --terminate-running
+              iosef launch_app --bundle-id com.apple.mobilesafari
+              iosef launch_app --bundle-id com.example.myapp --terminate-running
             """
     )
 
@@ -1881,9 +1881,9 @@ struct Find: AsyncParsableCommand {
             Multiple criteria are combined with AND logic.
 
             Examples:
-              ios_simulator_cli find --role AXButton
-              ios_simulator_cli find --name "Sign In"
-              ios_simulator_cli find --role AXStaticText --name "count"
+              iosef find --role AXButton
+              iosef find --name "Sign In"
+              iosef find --role AXStaticText --name "count"
             """
     )
 
@@ -1906,8 +1906,8 @@ struct Exists: AsyncParsableCommand {
             Useful for conditional logic in scripts.
 
             Examples:
-              ios_simulator_cli exists --name "Sign In"
-              ios_simulator_cli exists --role AXButton --name "Submit"
+              iosef exists --name "Sign In"
+              iosef exists --role AXButton --name "Submit"
             """
     )
 
@@ -1929,8 +1929,8 @@ struct Count: AsyncParsableCommand {
             Returns the number of elements matching the selector.
 
             Examples:
-              ios_simulator_cli count --role AXButton
-              ios_simulator_cli count --name "Row"
+              iosef count --role AXButton
+              iosef count --name "Row"
             """
     )
 
@@ -1953,8 +1953,8 @@ struct Text: AsyncParsableCommand {
             Checks value, then label, then title. Errors if no element matches.
 
             Examples:
-              ios_simulator_cli text --name "Tap count"
-              ios_simulator_cli text --role AXStaticText --name "score"
+              iosef text --name "Tap count"
+              iosef text --role AXStaticText --name "score"
             """
     )
 
@@ -1979,9 +1979,9 @@ struct TapElement: AsyncParsableCommand {
             For long-press, pass --duration (in seconds).
 
             Examples:
-              ios_simulator_cli tap_element --name "Sign In"
-              ios_simulator_cli tap_element --role AXButton --name "Submit"
-              ios_simulator_cli tap_element --name "Menu" --duration 0.5
+              iosef tap_element --name "Sign In"
+              iosef tap_element --role AXButton --name "Submit"
+              iosef tap_element --name "Menu" --duration 0.5
             """
     )
 
@@ -2009,8 +2009,8 @@ struct Input: AsyncParsableCommand {
             Combines find + tap + type into one step.
 
             Examples:
-              ios_simulator_cli input --role AXTextField --text "hello"
-              ios_simulator_cli input --name "Search" --text "query"
+              iosef input --role AXTextField --text "hello"
+              iosef input --name "Search" --text "query"
             """
     )
 
@@ -2040,8 +2040,8 @@ struct Wait: AsyncParsableCommand {
             on timeout.
 
             Examples:
-              ios_simulator_cli wait --name "Welcome"
-              ios_simulator_cli wait --role AXButton --name "Continue" --timeout 5
+              iosef wait --name "Welcome"
+              iosef wait --role AXButton --name "Continue" --timeout 5
             """
     )
 
@@ -2070,9 +2070,9 @@ struct LogShow: AsyncParsableCommand {
             Filter by process name or NSPredicate. Default: last 5 minutes, compact style.
 
             Examples:
-              ios_simulator_cli log_show --process SpringBoard --last 5s
-              ios_simulator_cli log_show --predicate 'subsystem == "com.apple.UIKit"' --last 3s
-              ios_simulator_cli log_show --level debug --last 1m
+              iosef log_show --process SpringBoard --last 5s
+              iosef log_show --predicate 'subsystem == "com.apple.UIKit"' --last 3s
+              iosef log_show --level debug --last 1m
             """
     )
 
@@ -2115,9 +2115,9 @@ struct LogStream: AsyncParsableCommand {
             Filter by process name or NSPredicate. Default: 5 seconds, compact style.
 
             Examples:
-              ios_simulator_cli log_stream --process SpringBoard --duration 3
-              ios_simulator_cli log_stream --predicate 'process == "MyApp"' --duration 10
-              ios_simulator_cli log_stream --level info --duration 5
+              iosef log_stream --process SpringBoard --duration 3
+              iosef log_stream --predicate 'process == "MyApp"' --duration 10
+              iosef log_stream --level info --duration 5
             """
     )
 

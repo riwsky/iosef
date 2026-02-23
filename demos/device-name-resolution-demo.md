@@ -10,7 +10,7 @@ The `--device` flag (and MCP `udid` parameter) now accepts either a simulator na
 Instead of looking up a UDID, just pass the simulator name:
 
 ```bash
-.build/release/ios_simulator_cli describe_all --device "ios-simulator-mcp-swift" 2>/dev/null | head -4
+.build/release/iosef describe_all --device "ios-simulator-mcp-swift" 2>/dev/null | head -4
 ```
 
 ```output
@@ -21,7 +21,7 @@ AXApplication " " (197±197, 426±426)
 ```
 
 ```bash
-.build/release/ios_simulator_cli view --device "ios-simulator-mcp-swift" --output /tmp/device-name-demo.png 2>/dev/null
+.build/release/iosef view --device "ios-simulator-mcp-swift" --output /tmp/device-name-demo.png 2>/dev/null
 ```
 
 ```output
@@ -39,7 +39,7 @@ Screenshot saved to /tmp/device-name-demo.png
 UUIDs still work exactly as before — they're detected by their 8-4-4-4-12 hex format:
 
 ```bash
-.build/release/ios_simulator_cli describe_all --device 6C07B68F-054D-434D-B5D7-6C52DCE7D78B 2>/dev/null | head -4
+.build/release/iosef describe_all --device 6C07B68F-054D-434D-B5D7-6C52DCE7D78B 2>/dev/null | head -4
 ```
 
 ```output
@@ -54,7 +54,7 @@ AXApplication " " (197±197, 426±426)
 The old `--udid` flag still works as a hidden alias:
 
 ```bash
-.build/release/ios_simulator_cli describe_all --udid 6C07B68F-054D-434D-B5D7-6C52DCE7D78B 2>/dev/null | head -4
+.build/release/iosef describe_all --udid 6C07B68F-054D-434D-B5D7-6C52DCE7D78B 2>/dev/null | head -4
 ```
 
 ```output
@@ -69,7 +69,7 @@ AXApplication " " (197±197, 426±426)
 When targeting a simulator that exists but is shutdown, the error includes the exact boot commands:
 
 ```bash
-.build/release/ios_simulator_cli view --device "bandwith" 2>&1 || true
+.build/release/iosef view --device "bandwith" 2>&1 || true
 ```
 
 ```output
@@ -81,7 +81,7 @@ Error: Simulator "bandwith" (77B19D8C-A775-4E42-96E0-46563815B313) is shutdown. 
 Same error with a UUID pointing to a shutdown sim:
 
 ```bash
-.build/release/ios_simulator_cli view --device 77B19D8C-A775-4E42-96E0-46563815B313 2>&1 || true
+.build/release/iosef view --device 77B19D8C-A775-4E42-96E0-46563815B313 2>&1 || true
 ```
 
 ```output
@@ -95,7 +95,7 @@ Error: Simulator "bandwith" (77B19D8C-A775-4E42-96E0-46563815B313) is shutdown. 
 When the name doesn't match any simulator, the error suggests how to create one:
 
 ```bash
-.build/release/ios_simulator_cli view --device "my-cool-project" 2>&1 || true
+.build/release/iosef view --device "my-cool-project" 2>&1 || true
 ```
 
 ```output
@@ -108,11 +108,11 @@ Error: No simulator found with name "my-cool-project". Create one with: xcrun si
 The help text reflects the new `--device` flag:
 
 ```bash
-.build/release/ios_simulator_cli view --help 2>&1 | grep -A1 "\-\-device"
+.build/release/iosef view --help 2>&1 | grep -A1 "\-\-device"
 ```
 
 ```output
-USAGE: ios_simulator_cli view [--verbose] [--json] [--device <device>] [--output <output>] [--type <type>]
+USAGE: iosef view [--verbose] [--json] [--device <device>] [--output <output>] [--type <type>]
 
 --
   --device, --udid <device>

@@ -4,7 +4,7 @@ import Foundation
 /// via direct CoreSimulator API calls through PrivateFrameworkBridge.
 public enum SimCtlClient {
 
-    /// Default timeout for process execution. Can be overridden via `IOS_SIMULATOR_MCP_TIMEOUT` env var.
+    /// Default timeout for process execution. Can be overridden via `IOSEF_TIMEOUT` env var.
     nonisolated(unsafe) public static var defaultTimeout: Duration = .seconds(30)
 
     public struct CommandResult: Sendable {
