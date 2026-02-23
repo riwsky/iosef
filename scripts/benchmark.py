@@ -16,8 +16,8 @@ from pathlib import Path
 import click
 
 SWIFT_BIN_DEFAULT = ".build/release/iosef"
-NODE_SERVER_DEFAULT = "node /Users/wcybriwsky/build/ios-simulator-mcp/build/index.js"
-IDB_DEFAULT = "/Users/wcybriwsky/.local/bin/idb"
+NODE_SERVER_DEFAULT = "node ../ios-simulator-mcp/build/index.js"
+IDB_DEFAULT = "../idb"
 RESULTS_DIR = Path("/tmp/ios-sim-mcp-bench")
 BASELINE_WORKSPACE_DIR = Path("/tmp/ios-sim-mcp-bench-baseline")
 BASELINE_WORKSPACE_NAME = "bench-baseline"

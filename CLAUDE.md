@@ -22,4 +22,3 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 
 *Demos:* Use `showboat` to create executable demo documents in `demos/`. Build incrementally with `showboat init`, `note`, `exec`, `image`. Verify with `showboat verify`. See existing demos for format. Always `showboat verify` before considering a demo complete.
 
-*Validation:* Use the `mcp-playground-validate` skill to run smoke tests after code changes. Quick: `~/build/tools/skills/mcp-playground-validate/scripts/smoke_test.py --udid <UDID> -v`. Tests tap, swipe, screenshot, text input, AX tree, and coordinate alignment against MCPTestApp.
