@@ -6,7 +6,7 @@ A fast, native Swift CLI and [MCP server](https://modelcontextprotocol.io/) for 
 
 ```
 iosef start --local --device "X"   →  creates/boots simulator, saves state to .iosef/state.json
-iosef tap / type / view            →  reads state.json, performs action, exits
+iosef tap / type / view             →  reads state.json, performs action, exits
 iosef mcp                          →  long-running MCP server (stdio), same capabilities
 iosef stop                         →  shuts down simulator, deletes device, cleans up state
 ```
@@ -54,10 +54,16 @@ iosef view --output /tmp/screen.jpg --type jpeg
 ### Interact
 
 ```bash
-iosef tap --x 200 --y 400                # Tap at coordinates
-iosef tap --x 100 --y 300 --duration 0.5 # Long-press
+iosef tap --name "Sign In"                    # Find element + tap (preferred)
+iosef tap --role AXButton --name "Submit"
+iosef tap --name "Menu" --duration 0.5        # Long-press by selector
 
-iosef type --text "Hello World"           # Type into the focused field
+iosef tap_point --x 200 --y 400              # Tap at coordinates
+iosef tap_point --x 100 --y 300 --duration 0.5 # Long-press at coordinates
+
+iosef type --text "Hello World"               # Type into the focused field
+iosef type --name "Search" --text "query"     # Find + tap + type in one step
+iosef type --role AXTextField --text "hello"
 
 iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
@@ -65,7 +71,7 @@ iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
 
 ### Selector commands
 
-Search and interact by `--role`, `--name`, and `--identifier`. Multiple criteria combine with AND logic.
+Search and query by `--role`, `--name`, and `--identifier`. Multiple criteria combine with AND logic.
 
 ```bash
 iosef find --role AXButton                    # All buttons
@@ -75,13 +81,6 @@ iosef find --role AXStaticText --name "count"  # Combine selectors
 iosef exists --name "Sign In"                 # Prints "true"/"false", exit 0/1
 iosef count --role AXButton                   # How many buttons?
 iosef text --name "Tap count"                 # Extract text content from first match
-
-iosef tap_element --name "Sign In"            # Find + tap in one step
-iosef tap_element --role AXButton --name "Submit"
-iosef tap_element --name "Menu" --duration 0.5  # Long-press by selector
-
-iosef input --role AXTextField --text "hello" # Find + tap + type in one step
-iosef input --name "Search" --text "query"
 
 iosef wait --name "Welcome"                   # Poll until element appears (default 10s)
 iosef wait --role AXButton --name "Continue" --timeout 5
@@ -138,7 +137,7 @@ Every CLI subcommand is also available as an MCP tool. Configure in your MCP cli
 
 All commands use iOS points. Screenshots are coordinate-aligned: 1 pixel = 1 iOS point.
 
-The accessibility tree reports positions as `(center±half-size)` — the center value is the tap target. For example, an element at `(195±39, 420±22)` has its center at (195, 420) and spans from x=156 to x=234 and y=398 to y=442. Use the center values directly with `tap --x 195 --y 420`.
+The accessibility tree reports positions as `(center±half-size)` — the center value is the tap target. For example, an element at `(195±39, 420±22)` has its center at (195, 420) and spans from x=156 to x=234 and y=398 to y=442. Use the center values directly with `tap_point --x 195 --y 420`.
 
 This means visual agents can tap exactly where they see elements in screenshots, with no coordinate translation layer.
 
@@ -148,7 +147,7 @@ By default, iosef stores state globally in `~/.iosef/`. You can instead create a
 
 ```bash
 iosef start --local --device "my-sim"   # State stored in ./.iosef/state.json
-iosef tap_element --name "Sign In"      # Auto-detects local session
+iosef tap --name "Sign In"              # Auto-detects local session
 iosef stop                              # Cleans up local session
 ```
 
@@ -156,7 +155,7 @@ iosef stop                              # Cleans up local session
 
 ```bash
 # Force global even when a local session exists
-iosef --global tap --x 200 --y 400
+iosef --global tap_point --x 200 --y 400
 
 # Force local
 iosef --local status
@@ -204,9 +203,9 @@ iosef launch_app --bundle-id com.example.myapp
 iosef wait --name "Welcome" --timeout 15
 
 # Log in
-iosef input --name "Email" --text "user@example.com"
-iosef input --name "Password" --text "hunter2"
-iosef tap_element --name "Sign In"
+iosef type --name "Email" --text "user@example.com"
+iosef type --name "Password" --text "hunter2"
+iosef tap --name "Sign In"
 
 # Verify we landed on the dashboard
 iosef wait --name "Dashboard" --timeout 10
@@ -248,15 +247,14 @@ State is stored in `~/.iosef/state.json` (global) or `./.iosef/state.json` (loca
 | `describe_all` | `[--depth N]` | Dump full accessibility tree |
 | `describe_point` | `--x X --y Y` | Get accessibility element at coordinates |
 | `view` | `[--output <path>] [--type png\|jpeg\|tiff\|bmp\|gif]` | Capture screenshot |
-| `tap` | `--x X --y Y [--duration S]` | Tap at coordinates (long-press with duration) |
-| `type` | `--text <text>` | Type into focused field |
+| `tap` | `[--role R] [--name N] [--identifier I] [--duration S]` | Find element by selector + tap |
+| `tap_point` | `--x X --y Y [--duration S]` | Tap at coordinates (long-press with duration) |
+| `type` | `--text <text> [--role R] [--name N] [--identifier I]` | Type text; with selectors: find + tap + type |
 | `swipe` | `--x-start X --y-start Y --x-end X --y-end Y [--delta N] [--duration S]` | Swipe between two points |
 | `find` | `[--role R] [--name N] [--identifier I]` | Find elements by selector |
 | `exists` | `[--role R] [--name N] [--identifier I]` | Check if element exists (exit 1 if not) |
 | `count` | `[--role R] [--name N] [--identifier I]` | Count matching elements |
 | `text` | `[--role R] [--name N] [--identifier I]` | Extract text from first match |
-| `tap_element` | `[--role R] [--name N] [--identifier I] [--duration S]` | Find + tap in one step |
-| `input` | `[--role R] [--name N] [--identifier I] --text <text>` | Find + tap + type in one step |
 | `wait` | `[--role R] [--name N] [--identifier I] [--timeout S]` | Wait for element to appear |
 | `log_show` | `[--last T] [--process P\|--predicate P] [--style S] [--level L]` | Show recent log entries |
 | `log_stream` | `[--duration S] [--process P\|--predicate P] [--style S] [--level L]` | Stream live log entries |

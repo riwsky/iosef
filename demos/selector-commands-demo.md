@@ -73,9 +73,9 @@ AXButton "Row 0 Column 4" (292±31, 225±10)
 AXButton "Row 0 Column 5" (355±31, 225±10)
 ```
 
-## 4. New way: `tap_element`
+## 4. New way: `tap` (selector-based)
 
-`tap_element` combines find + tap into one command. No coordinate extraction needed.
+`tap` (selector-based) combines find + tap_point into one command. No coordinate extraction needed. (Formerly `tap_element`.)
 
 ```bash
 UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef tap_element --name "Row 0 Column 1" --udid $UDID 2>/dev/null
@@ -146,9 +146,9 @@ Tapped successfully
 Typed successfully
 ```
 
-## 8. New way: `input`
+## 8. New way: `type` with selectors
 
-`input` combines find + tap + type. One command, no coordinates.
+`type` with selectors combines find + tap + type. One command, no coordinates. (Formerly `input`.)
 
 ```bash
 UDID=6C07B68F-054D-434D-B5D7-6C52DCE7D78B && .build/release/iosef input --role AXTextField --text "hello from selectors" --udid $UDID 2>/dev/null
@@ -216,8 +216,8 @@ AXApplication "MCPTestApp" (197±197, 426±295)
 
 | Workflow | Old way | New way |
 |---|---|---|
-| Tap a named button | `describe_all` → parse → `tap` (3 steps) | `tap_element --name "..."` (1 step) |
-| Type into a field | `describe_all` → parse → `tap` → sleep → `type` (5 steps) | `input --role AXTextField --text "..."` (1 step) |
+| Tap a named button | `describe_all` → parse → `tap_point` (3 steps) | `tap --name "..."` (1 step) |
+| Type into a field | `describe_all` → parse → `tap_point` → sleep → `type` (5 steps) | `type --role AXTextField --text "..."` (1 step) |
 | Check if element exists | `describe_all` → parse output (2 steps) | `exists --name "..."` (1 step) |
 | Get element text | `describe_all` → parse output (2 steps) | `text --name "..."` (1 step) |
 | Wait for UI change | Manual polling loop (N steps) | `wait --name "..." --timeout 5` (1 step) |

@@ -21,7 +21,7 @@ This creates `.ios-simulator-mcp/config.json` in the current directory, boots th
 
 1. Start the simulator: `iosef start --local --device "<name>"` (first time)
 2. Build and launch the app (project-specific — check CLAUDE.md)
-3. Interact — prefer selector commands (`tap_element`, `input`, `exists`, `wait`) over coordinate-based (`tap`, `swipe`). Use `describe_all` when you need to survey the full screen or elements lack stable labels.
+3. Interact — prefer selector commands (`tap`, `type` with selectors, `exists`, `wait`) over coordinate-based (`tap_point`, `swipe`). Use `describe_all` when you need to survey the full screen or elements lack stable labels.
 4. Take a screenshot: `iosef view` (saves to `.ios-simulator-mcp/cache/`; use `--output /path/to/file.png` for a specific path)
 5. Screenshot again after each action to verify result
 
@@ -31,15 +31,16 @@ All commands use named arguments. Tool names have no `ui_` prefix. Run `iosef <s
 
 ### Selector Commands (preferred)
 
-Use selector commands for 1-step interactions instead of describe_all → parse → tap:
+Use selector commands for 1-step interactions instead of describe_all → parse → tap_point:
 
 ```bash
-# Tap by selector (replaces describe_all → parse → tap)
-iosef tap_element --name "Sign In"
-iosef tap_element --name "Menu" --duration 0.5  # long press
+# Tap by selector (replaces describe_all → parse → tap_point)
+iosef tap --name "Sign In"
+iosef tap --name "Menu" --duration 0.5  # long press
 
-# Focus + type in one step (replaces tap → sleep → type)
-iosef input --role AXTextField --text "hello"
+# Focus + type in one step (replaces tap_point → sleep → type)
+iosef type --role AXTextField --text "hello"
+iosef type --name "Search" --text "query"
 
 # Find elements by role/name/identifier (AND logic)
 iosef find --role AXButton --name "Submit"
@@ -63,9 +64,9 @@ iosef describe_all
 iosef describe_all --depth 2    # limit tree depth
 iosef describe_point --x 200 --y 400
 
-# Tap
-iosef tap --x 201 --y 740
-iosef tap --x 201 --y 740 --duration 1.0   # long press
+# Tap at coordinates
+iosef tap_point --x 201 --y 740
+iosef tap_point --x 201 --y 740 --duration 1.0   # long press
 
 # Swipe / scroll
 iosef swipe --x-start 200 --y-start 300 --x-end 200 --y-end 700 --duration 0.3
@@ -78,7 +79,7 @@ iosef view
 iosef view --output /tmp/sim.png  # explicit path
 
 # Chain for rapid repeated actions
-iosef tap --x 201 --y 740 && sleep 0.3 && iosef tap --x 201 --y 740
+iosef tap_point --x 201 --y 740 && sleep 0.3 && iosef tap_point --x 201 --y 740
 ```
 
 **Screenshot fallback**: If `view` fails with a Screen Recording error, use the MCP `view` tool instead.
@@ -155,10 +156,10 @@ showboat note demos/my-feature-demo.md "Description of what we're demonstrating.
 # Setup: build app and create any required state
 showboat exec demos/my-feature-demo.md bash "./scripts/build.sh 2>&1 | tail -1"
 showboat exec demos/my-feature-demo.md bash "sleep 1"
-showboat exec demos/my-feature-demo.md bash "iosef tap_element --name 'Add' --device \$NAME_OR_UDID 2>/dev/null"
+showboat exec demos/my-feature-demo.md bash "iosef tap --name 'Add' --device \$NAME_OR_UDID 2>/dev/null"
 # ... more setup as needed ...
 # Then the actual demo actions
-showboat exec demos/my-feature-demo.md bash "iosef tap_element --name 'Button' --device \$NAME_OR_UDID 2>/dev/null"
+showboat exec demos/my-feature-demo.md bash "iosef tap --name 'Button' --device \$NAME_OR_UDID 2>/dev/null"
 showboat exec demos/my-feature-demo.md bash "iosef view --device \$NAME_OR_UDID --output /tmp/screenshot.png 2>/dev/null"
 showboat image demos/my-feature-demo.md /tmp/screenshot.png
 showboat verify demos/my-feature-demo.md  # must pass before done
@@ -169,7 +170,7 @@ showboat verify demos/my-feature-demo.md  # must pass before done
 ## Tips
 
 - **Blank AX tree?** If `describe_all` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
-- **Selector commands first**: Use `tap_element`/`input`/`exists` when elements have stable names. Fall back to coordinates for unlabeled elements and swipe gestures.
+- **Selector commands first**: Use `tap`/`type` (with selectors)/`exists` when elements have stable names. Fall back to coordinates for unlabeled elements and swipe gestures.
 - **AX tree first**: Never guess coordinates. Always read the tree.
 - **Screenshot after every action**: Confirm the UI state changed as expected.
 - **Identify elements by label**: If an element isn't in the AX tree, it lacks accessibility markup. Add `isAccessibilityElement` + `accessibilityLabel` and rebuild.

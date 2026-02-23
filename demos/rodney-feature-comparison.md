@@ -12,8 +12,8 @@ Comparison between [rodney](https://github.com/simonw/rodney) (Chrome automation
 | `wait SELECTOR` | None | No wait-for-element |
 | `exists SELECTOR` / `visible SELECTOR` | None | No existence checks |
 | `count SELECTOR` | None | No element counting |
-| `click SELECTOR` | `tap --x --y` (coord-only) | No symbolic tap |
-| `input SELECTOR TEXT` | `tap` + `type` (two commands) | No single-command input by selector |
+| `click SELECTOR` | `tap --name N` | ~~No symbolic tap~~ Done |
+| `input SELECTOR TEXT` | `type --name N --text T` | ~~No single-command input~~ Done |
 | `text SELECTOR` | None | Must parse AX tree for values |
 | `assert EXPR [EXPECTED]` | None | No built-in assertions |
 
@@ -119,37 +119,37 @@ COUNTER=$(iosef text --role staticText --name "Tap count")
 echo "Current count: $COUNTER"
 ```
 
-**5. `tap_element`** — Tap by selector (no coordinates needed)
+**5. `tap`** — Tap by selector (no coordinates needed)
 
 ```
-iosef tap_element [--role ROLE] [--name NAME] [--id ID] [--duration D] [--udid UDID]
+iosef tap [--role ROLE] [--name NAME] [--id ID] [--duration D] [--udid UDID]
 ```
 
 Finds element -> computes center from frame -> sends tap via IndigoHID. Eliminates the "read AX tree, parse coordinates, tap" loop:
 ```bash
 # Before: 3-step process
 COORDS=$(iosef find --role button --name Submit --first --json | jq '.x, .y')
-iosef tap --x ... --y ...
+iosef tap_point --x ... --y ...
 
 # After: 1 command
-iosef tap_element --role button --name Submit
+iosef tap --role button --name Submit
 ```
 
-**6. `input`** — Tap field by selector, then type
+**6. `type` with selectors** — Tap field by selector, then type
 
 ```
-iosef input [--role ROLE] [--name NAME] [--id ID] --text TEXT [--udid UDID]
+iosef type --text TEXT [--role ROLE] [--name NAME] [--id ID] [--udid UDID]
 ```
 
 Composes: find element -> tap center -> brief delay -> type text. Replaces the common 3-command pattern:
 ```bash
 # Before
-iosef tap --x 222 --y 524
+iosef tap_point --x 222 --y 524
 sleep 0.3
 iosef type --text "hello"
 
 # After
-iosef input --id text_field --text "hello"
+iosef type --id text_field --text "hello"
 ```
 
 ### Tier 2 — Robustness features
@@ -162,7 +162,7 @@ iosef wait [--role ROLE] [--name NAME] [--id ID] [--timeout SECS] [--udid UDID]
 
 Polls AX tree every 250ms until match or timeout (default 10s). Exit 0=found, 2=timeout. Critical for animations, navigation transitions, and async state changes:
 ```bash
-iosef tap_element --role button --name "Load Data"
+iosef tap --role button --name "Load Data"
 iosef wait --role staticText --name "Results" --timeout 15
 iosef view --output /tmp/results.png
 ```
@@ -202,5 +202,5 @@ We should adopt this convention across all new commands.
 - All new commands follow the existing CLI pattern in `SimulatorMCPCommand.swift` (lines 936-1250): `AsyncParsableCommand` structs with `--verbose`, `--json`, `--udid` flags
 - Register new commands in the `subcommands` array (line 839)
 - Add corresponding MCP tool definitions and handlers for each command
-- `find` is the foundation — `exists`, `count`, `text`, `tap_element`, `input`, and `wait` all compose on top of it
+- `find` is the foundation — `exists`, `count`, `text`, `tap`, `type` (with selectors), and `wait` all compose on top of it
 - The `TreeNode` type already has `role`, `label`, and `frame` — we just need to add the filtering/search layer

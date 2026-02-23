@@ -105,7 +105,7 @@ func applyScope(from common: CommonOptions) {
 
 // MARK: - Configuration
 
-let serverVersion = "0.1.0"
+let serverVersion = "1.0.2"
 let filteredTools: Set<String> = {
     guard let env = ProcessInfo.processInfo.environment["IOSEF_FILTERED_TOOLS"] else {
         return []
@@ -386,10 +386,10 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("tap") {
+    if !isFiltered("tap_point") {
         tools.append(Tool(
-            name: "tap",
-            description: "Tap at (x, y) on the iOS Simulator screen. Prefer tap_element when targeting a named/accessible element.",
+            name: "tap_point",
+            description: "Tap at (x, y) coordinates on the iOS Simulator screen. Use tap (selector-based) when targeting a named/accessible element.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -408,20 +408,25 @@ func allTools() -> [Tool] {
     }
 
     if !isFiltered("type") {
+        var typeProps: [String: Value] = [
+            "text": .object([
+                "type": .string("string"),
+                "description": .string("Text to input"),
+                "maxLength": .int(500),
+                "pattern": .string(#"^[\x20-\x7E]+$"#),
+            ]),
+            "udid": udidSchema,
+        ]
+        // Add optional selector properties so type can find+tap+type in one step
+        for (key, value) in selectorProperties {
+            typeProps[key] = value
+        }
         tools.append(Tool(
             name: "type",
-            description: "Type text into the focused field in the iOS Simulator. Prefer input to find, focus, and type in one step.",
+            description: "Type text in the iOS Simulator. With selectors (role/name/identifier): finds the element, taps it to focus, then types. Without selectors: types into the already-focused field.",
             inputSchema: .object([
                 "type": .string("object"),
-                "properties": .object([
-                    "text": .object([
-                        "type": .string("string"),
-                        "description": .string("Text to input"),
-                        "maxLength": .int(500),
-                        "pattern": .string(#"^[\x20-\x7E]+$"#),
-                    ]),
-                    "udid": udidSchema,
-                ]),
+                "properties": .object(typeProps),
                 "required": .array([.string("text")]),
             ])
         ))
@@ -567,37 +572,19 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("tap_element") {
-        var tapElSchema = selectorSchema
-        tapElSchema["duration"] = .object([
+    if !isFiltered("tap") {
+        var tapSchema = selectorSchema
+        tapSchema["duration"] = .object([
             "type": .string("string"),
             "description": .string("Press duration for long-press (in seconds)"),
             "pattern": .string(#"^\d+(\.\d+)?$"#),
         ])
         tools.append(Tool(
-            name: "tap_element",
-            description: "Find an accessibility element by selector and tap its center. Combines find + tap into one step.",
+            name: "tap",
+            description: "Find an accessibility element by selector and tap its center. Combines find + tap_point into one step. Use tap_point for raw coordinate taps.",
             inputSchema: .object([
                 "type": .string("object"),
-                "properties": .object(tapElSchema),
-            ])
-        ))
-    }
-
-    if !isFiltered("input") {
-        var inputSchema = selectorSchema
-        inputSchema["text"] = .object([
-            "type": .string("string"),
-            "description": .string("Text to type after tapping the element"),
-            "maxLength": .int(500),
-        ])
-        tools.append(Tool(
-            name: "input",
-            description: "Find an element by selector, tap it to focus, then type text. Combines find + tap + type into one step.",
-            inputSchema: .object([
-                "type": .string("object"),
-                "properties": .object(inputSchema),
-                "required": .array([.string("text")]),
+                "properties": .object(tapSchema),
             ])
         ))
     }
@@ -668,10 +655,10 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleUIDescribeAll(params)
         case "describe_point":
             return try await handleUIDescribePoint(params)
-        case "tap":
-            return try await handleUITap(params)
+        case "tap_point":
+            return try await handleTapPoint(params)
         case "type":
-            return try await handleUIType(params)
+            return try await handleType(params)
         case "swipe":
             return try await handleUISwipe(params)
         case "view":
@@ -688,10 +675,8 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleCount(params)
         case "text":
             return try await handleText(params)
-        case "tap_element":
-            return try await handleTapElement(params)
-        case "input":
-            return try await handleInput(params)
+        case "tap":
+            return try await handleTap(params)
         case "wait":
             return try await handleWait(params)
         case "log_show":
@@ -742,7 +727,7 @@ func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTo
     return .init(content: [.text(markdown)])
 }
 
-func handleUITap(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+func handleTapPoint(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     guard let x = extractDouble(params.arguments?["x"]),
           let y = extractDouble(params.arguments?["y"]) else {
         return .init(content: [.text("Missing required parameters: x, y")], isError: true)
@@ -760,11 +745,25 @@ func handleUITap(_ params: CallTool.Parameters) async throws -> CallTool.Result 
     return .init(content: [.text("Tapped successfully")])
 }
 
-func handleUIType(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+func handleType(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     guard let text = params.arguments?["text"]?.stringValue else {
         return .init(content: [.text("Missing required parameter: text")], isError: true)
     }
 
+    // If any selector is present, do find+tap+type (what input used to do)
+    let hasSelector = params.arguments?["role"]?.stringValue != nil
+        || params.arguments?["name"]?.stringValue != nil
+        || params.arguments?["identifier"]?.stringValue != nil
+
+    if hasSelector {
+        let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
+        hidClient.tap(x: center.x, y: center.y)
+        usleep(100_000) // 100ms delay for keyboard to appear
+        hidClient.typeText(text)
+        return .init(content: [.text("Tapped (\(Int(center.x)), \(Int(center.y))) and typed \"\(text)\"")])
+    }
+
+    // No selector — type into already-focused field
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
     hidClient.typeText(text)
@@ -902,7 +901,7 @@ func resolveAndTapFirstMatch(from params: CallTool.Parameters) async throws -> (
     return (frame.center, hidClient)
 }
 
-func handleTapElement(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+func handleTap(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
 
     if let duration = extractDouble(params.arguments?["duration"]) {
@@ -912,20 +911,6 @@ func handleTapElement(_ params: CallTool.Parameters) async throws -> CallTool.Re
     }
 
     return .init(content: [.text("Tapped element at (\(Int(center.x)), \(Int(center.y)))")])
-}
-
-func handleInput(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    guard let text = params.arguments?["text"]?.stringValue else {
-        return .init(content: [.text("Missing required parameter: text")], isError: true)
-    }
-
-    let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
-
-    hidClient.tap(x: center.x, y: center.y)
-    usleep(100_000) // 100ms delay for keyboard to appear
-    hidClient.typeText(text)
-
-    return .init(content: [.text("Tapped (\(Int(center.x)), \(Int(center.y))) and typed \"\(text)\"")])
 }
 
 func handleWait(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -1284,10 +1269,10 @@ struct SimulatorCLI: AsyncParsableCommand {
 
             Example — selector-based (preferred):
               # Tap a button by name
-              iosef tap_element --name "Sign In"
+              iosef tap --name "Sign In"
 
               # Type into a field by role
-              iosef input --role AXTextField --text "hello"
+              iosef type --role AXTextField --text "hello"
 
               # Wait for a screen to load
               iosef wait --name "Welcome"
@@ -1297,7 +1282,7 @@ struct SimulatorCLI: AsyncParsableCommand {
 
             Example — coordinate-based (when elements lack labels):
               iosef describe_all
-              iosef tap --x 195 --y 420
+              iosef tap_point --x 195 --y 420
               iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 
               See 'iosef help <subcommand>' for detailed help.
@@ -1324,8 +1309,9 @@ struct SimulatorCLI: AsyncParsableCommand {
                 UIView.self,
             ]),
             CommandGroup(name: "Interaction:", subcommands: [
-                UITap.self,
-                UIType.self,
+                Tap.self,
+                TapPoint.self,
+                Type.self,
                 UISwipe.self,
             ]),
             CommandGroup(name: "Selectors:", subcommands: [
@@ -1333,8 +1319,6 @@ struct SimulatorCLI: AsyncParsableCommand {
                 Exists.self,
                 Count.self,
                 Text.self,
-                TapElement.self,
-                Input.self,
                 Wait.self,
             ]),
             CommandGroup(name: "Logging:", subcommands: [
@@ -1748,21 +1732,21 @@ struct UIDescribePoint: AsyncParsableCommand {
     }
 }
 
-struct UITap: AsyncParsableCommand {
+struct TapPoint: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "tap",
+        commandName: "tap_point",
         abstract: "Tap at (x, y) coordinates on the iOS Simulator screen.",
         discussion: """
             Sends a HID touch event directly to the simulator (no simctl overhead). \
             Coordinates are in iOS points. Use describe_all to find element positions.
 
-            Tip: prefer tap_element when targeting a named element (no coordinate lookup needed).
+            Tip: prefer tap (selector-based) when targeting a named element.
 
             For long-press, pass --duration (in seconds).
 
             Examples:
-              iosef tap --x 200 --y 400
-              iosef tap --x 100 --y 300 --duration 0.5
+              iosef tap_point --x 200 --y 400
+              iosef tap_point --x 100 --y 300 --duration 0.5
             """
     )
 
@@ -1781,35 +1765,36 @@ struct UITap: AsyncParsableCommand {
         var args: [String: Value] = ["x": .double(x), "y": .double(y)]
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "tap", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+        try await runToolCLI(toolName: "tap_point", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
-struct UIType: AsyncParsableCommand {
+struct Type: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "type",
-        abstract: "Type text into the focused field.",
+        abstract: "Type text, optionally finding and tapping an element first.",
         discussion: """
-            Sends keyboard HID events to type text into whatever field currently has \
-            focus in the simulator. Only printable ASCII characters (0x20-0x7E) are supported.
-
-            Tip: prefer input to find a field, tap it, and type in one step.
-
-            Tap a text field first with tap to ensure it has focus.
+            With selectors (--role, --name, --identifier): finds the element, taps its \
+            center to focus, then types. Without selectors: types into the already-focused \
+            field. Only printable ASCII characters (0x20-0x7E) are supported.
 
             Examples:
               iosef type --text hello
               iosef type --text "Hello World"
+              iosef type --name "Search" --text "query"
+              iosef type --role AXTextField --text "hello"
             """
     )
 
     @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
 
     @Option(name: .long, help: "Text to input")
     var text: String
 
     func run() async throws {
-        var args: [String: Value] = ["text": .string(text)]
+        var args = selector.toArguments()
+        args["text"] = .string(text)
         common.addDevice(to: &args)
         try await runToolCLI(toolName: "type", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
@@ -2058,20 +2043,21 @@ struct Text: AsyncParsableCommand {
     }
 }
 
-struct TapElement: AsyncParsableCommand {
+struct Tap: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "tap_element",
+        commandName: "tap",
         abstract: "Find an element by selector and tap it.",
         discussion: """
             Searches the accessibility tree for the first matching element and taps \
-            its center. Combines find + tap into one step. Errors if no match.
+            its center. Combines find + tap_point into one step. Errors if no match.
 
-            For long-press, pass --duration (in seconds).
+            For long-press, pass --duration (in seconds). \
+            For coordinate-based taps, use tap_point instead.
 
             Examples:
-              iosef tap_element --name "Sign In"
-              iosef tap_element --role AXButton --name "Submit"
-              iosef tap_element --name "Menu" --duration 0.5
+              iosef tap --name "Sign In"
+              iosef tap --role AXButton --name "Submit"
+              iosef tap --name "Menu" --duration 0.5
             """
     )
 
@@ -2085,36 +2071,7 @@ struct TapElement: AsyncParsableCommand {
         var args = selector.toArguments()
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
-        try await runToolCLI(toolName: "tap_element", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
-    }
-}
-
-struct Input: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "input",
-        abstract: "Find an element, tap it, then type text.",
-        discussion: """
-            Searches for an element by selector, taps its center to focus, \
-            waits briefly for the keyboard, then types the given text. \
-            Combines find + tap + type into one step.
-
-            Examples:
-              iosef input --role AXTextField --text "hello"
-              iosef input --name "Search" --text "query"
-            """
-    )
-
-    @OptionGroup var common: CommonOptions
-    @OptionGroup var selector: SelectorOptions
-
-    @Option(name: .long, help: "Text to type after tapping the element")
-    var text: String
-
-    func run() async throws {
-        var args = selector.toArguments()
-        args["text"] = .string(text)
-        common.addDevice(to: &args)
-        try await runToolCLI(toolName: "input", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+        try await runToolCLI(toolName: "tap", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 

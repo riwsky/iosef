@@ -27,7 +27,7 @@ TOOLS: list[tuple[str, dict | None]] = [
     ("get_booted_sim_id", None),
     ("describe_all", None),
     ("describe_point", {"x": 165, "y": 269}),
-    ("tap", {"x": 165, "y": 269}),
+    ("tap_point", {"x": 165, "y": 269}),
     ("view", None),
 ]
 
@@ -47,8 +47,8 @@ CLI_TOOLS: list[tuple[str, str, str, str]] = [
         "idb",
     ),
     (
-        "tap",
-        "{swift_bin} tap --x 165 --y 269 --udid {udid}",
+        "tap_point",
+        "{swift_bin} tap_point --x 165 --y 269 --udid {udid}",
         "{idb} ui tap --udid {udid} --json -- 165 269",
         "idb",
     ),
@@ -245,7 +245,7 @@ def cli_smoke_test(swift_bin: str, idb: str, udid: str) -> None:
     """Quick smoke test for both Swift CLI and idb."""
     info("Smoke testing Swift CLI...")
     try:
-        r = run(f"{swift_bin} tap --x 0 --y 0 --udid {udid}", timeout=10)
+        r = run(f"{swift_bin} tap_point --x 0 --y 0 --udid {udid}", timeout=10)
         if r.returncode != 0:
             error(f"Swift CLI smoke test failed: {r.stderr.strip()}")
             sys.exit(1)
