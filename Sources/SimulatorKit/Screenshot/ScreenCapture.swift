@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 import ImageIO
-import CoreImage
+@preconcurrency import CoreImage
 import IOSurface
 
 /// Captures screenshots of the iOS Simulator.
