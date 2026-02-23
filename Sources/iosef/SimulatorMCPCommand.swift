@@ -1191,10 +1191,10 @@ struct CommonOptions: ParsableArguments {
     @Option(name: [.long, .customLong("udid", withSingleDash: false)], help: "Simulator name or UDID (auto-detected if omitted)")
     var device: String? = nil
 
-    @Flag(name: .long, help: "Use local config (./.ios-simulator-mcp/)")
+    @Flag(name: .long, help: "Use local config (./.iosef/)")
     var local: Bool = false
 
-    @Flag(name: .long, help: "Use global config (~/.ios-simulator-mcp/)")
+    @Flag(name: .long, help: "Use global config (~/.iosef/)")
     var global: Bool = false
 
     /// Adds the device identifier to a tool arguments dictionary (as "udid" key for MCP compatibility).
@@ -1304,13 +1304,13 @@ struct SimulatorCLI: AsyncParsableCommand {
             Getting Started:
               iosef start --local --device "my-sim"
 
-              This creates .ios-simulator-mcp/config.json in the current directory, \
+              This creates .iosef/config.json in the current directory, \
               boots the simulator, and opens Simulator.app. Subsequent commands \
               auto-detect the device from the config file.
 
             Config Directory:
-              Local:  ./.ios-simulator-mcp/   (created with start --local)
-              Global: ~/.ios-simulator-mcp/   (default)
+              Local:  ./.iosef/   (created with start --local)
+              Global: ~/.iosef/   (default)
 
               The local directory takes priority when it exists. Use --local or \
               --global on any command to override. Config stores the device name \
@@ -1504,8 +1504,8 @@ struct Start: AsyncParsableCommand {
             Creates a config directory, resolves the target device, boots the \
             simulator if needed, and opens Simulator.app.
 
-            With --local, creates ./.ios-simulator-mcp/ in the current directory. \
-            Without --local, uses the global ~/.ios-simulator-mcp/ directory.
+            With --local, creates ./.iosef/ in the current directory. \
+            Without --local, uses the global ~/.iosef/ directory.
 
             Device resolution order:
               1. --device flag

@@ -10,7 +10,7 @@ struct ProjectConfigTests {
     @Test("auto scope returns local dir when local config exists")
     func autoScopeReturnsLocal() throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
-        let localDir = tmp + "/.ios-simulator-mcp"
+        let localDir = tmp + "/.iosef"
         try FileManager.default.createDirectory(atPath: localDir, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: localDir + "/config.json", contents: Data("{}".utf8))
         defer { try? FileManager.default.removeItem(atPath: tmp) }
@@ -26,21 +26,21 @@ struct ProjectConfigTests {
         defer { try? FileManager.default.removeItem(atPath: tmp) }
 
         let dir = resolveStateDir(.auto, cwd: tmp)
-        #expect(dir == NSHomeDirectory() + "/.ios-simulator-mcp")
+        #expect(dir == NSHomeDirectory() + "/.iosef")
     }
 
     @Test("local scope always returns local dir")
     func localScope() {
         let tmp = "/tmp/test-\(UUID().uuidString)"
         let dir = resolveStateDir(.local, cwd: tmp)
-        #expect(dir == tmp + "/.ios-simulator-mcp")
+        #expect(dir == tmp + "/.iosef")
     }
 
     @Test("global scope always returns global dir")
     func globalScope() {
         let tmp = "/tmp/test-\(UUID().uuidString)"
         let dir = resolveStateDir(.global, cwd: tmp)
-        #expect(dir == NSHomeDirectory() + "/.ios-simulator-mcp")
+        #expect(dir == NSHomeDirectory() + "/.iosef")
     }
 
     // MARK: - readProjectConfig / writeProjectConfig
@@ -136,7 +136,7 @@ struct ProjectConfigTests {
     @Test("stale disk cache is invalidated when config device differs")
     func staleCacheInvalidatedByConfig() throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
-        let stateDir = tmp + "/.ios-simulator-mcp"
+        let stateDir = tmp + "/.iosef"
         try FileManager.default.createDirectory(atPath: stateDir + "/cache", withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: tmp) }
 

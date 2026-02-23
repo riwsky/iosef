@@ -1,6 +1,6 @@
 .build/
 .swiftpm/
-.ios-simulator-mcp/
+.iosef/
 Package.resolved
 *.xcodeproj/
 xcuserdata/

@@ -2,11 +2,11 @@ import Foundation
 
 // MARK: - Scope mode
 
-/// Which state directory to use: local (./.ios-simulator-mcp/) or global (~/.ios-simulator-mcp/).
+/// Which state directory to use: local (./.iosef/) or global (~/.iosef/).
 public enum ScopeMode {
-    case auto      // local if ./.ios-simulator-mcp/config.json exists, else global
-    case local     // force ./.ios-simulator-mcp/
-    case global    // force ~/.ios-simulator-mcp/
+    case auto      // local if ./.iosef/config.json exists, else global
+    case local     // force ./.iosef/
+    case global    // force ~/.iosef/
 }
 
 // MARK: - Project config
@@ -25,8 +25,8 @@ public struct ProjectConfig: Codable, Equatable {
 /// Returns the state directory path for the given scope and base directories.
 /// Does NOT create the directory — callers that write must ensure it exists first.
 public func resolveStateDir(_ scope: ScopeMode, cwd: String = FileManager.default.currentDirectoryPath) -> String {
-    let localDir = cwd + "/.ios-simulator-mcp"
-    let globalDir = NSHomeDirectory() + "/.ios-simulator-mcp"
+    let localDir = cwd + "/.iosef"
+    let globalDir = NSHomeDirectory() + "/.iosef"
 
     switch scope {
     case .local:

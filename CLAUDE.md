@@ -10,7 +10,7 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 
 *Exploring git:* You will, reasonably, often want or be directed to compare code against how joshuayoes/ios-simulator-mcp or facebook/idb do it. Do NOT compare by browsing raw.githubcontent or the github web interface - instead, clone the repos locally. Another useful source of comparison is ldomaradzki/xctree.
 
-*CLI mode:* `iosef <tool> [--option value ...]` — the primary interface. Run `iosef start --local --device "<name>"` to set up a project config directory (`.ios-simulator-mcp/`) and boot the simulator. Subsequent commands auto-detect the device from config. Stderr shows timing/diagnostic logs. Use `iosef mcp` to start the MCP server.
+*CLI mode:* `iosef <tool> [--option value ...]` — the primary interface. Run `iosef start --local --device "<name>"` to set up a project config directory (`.iosef/`) and boot the simulator. Subsequent commands auto-detect the device from config. Stderr shows timing/diagnostic logs. Use `iosef mcp` to start the MCP server.
 
 *Coordinate math:* agents can navigate the MCP in two ways: via the accessibility tree coordinates, and via their native graphical understanding. To that end, it's important that the pixels of any screenshot tools use the same coordinates and scale as the accessibility tree and the tap tools. Further complicating this is the fact that LLMs have limits on image size. All told, we end up wanting to shrink all of these by a constant, well-behaved scale. If you look through the commit history of joshuayoes/ios-simulator-mcp, you'll see a change that does this resizing; use that as inspiration.
 
