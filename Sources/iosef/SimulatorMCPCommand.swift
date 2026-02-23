@@ -55,42 +55,42 @@ func withTimeout<T: Sendable>(
     }
 }
 
-// MARK: - Project config (types from SimulatorKit, wrappers for activeScope default)
+// MARK: - Session state (types from SimulatorKit, wrappers for activeScope default)
 
 /// Resolved scope mode for this invocation (set by applyScope before dispatch).
 nonisolated(unsafe) var activeScope: ScopeMode = .auto
 
-/// Convenience: resolveStateDir using activeScope default.
-func resolveStateDir(_ scope: ScopeMode = activeScope) -> String {
-    SimulatorKit.resolveStateDir(scope)
+/// Convenience: resolveSessionDir using activeScope default.
+func resolveSessionDir(_ scope: ScopeMode = activeScope) -> String {
+    SimulatorKit.resolveSessionDir(scope)
 }
 
-/// Convenience: ensureStateDir using activeScope default.
+/// Convenience: ensureSessionDir using activeScope default.
 @discardableResult
-func ensureStateDir(_ scope: ScopeMode = activeScope) -> String {
-    SimulatorKit.ensureStateDir(scope)
+func ensureSessionDir(_ scope: ScopeMode = activeScope) -> String {
+    SimulatorKit.ensureSessionDir(scope)
 }
 
-/// Reads config.json from the active state directory, or nil if absent/invalid.
-func readProjectConfig() -> ProjectConfig? {
-    let dir = resolveStateDir()
-    guard let config = SimulatorKit.readProjectConfig(from: dir) else {
+/// Reads state.json from the active session directory, or nil if absent/invalid.
+func readSessionState() -> SessionState? {
+    let dir = resolveSessionDir()
+    guard let state = SimulatorKit.readSessionState(from: dir) else {
         return nil
     }
-    log("Loaded config from \(dir)/config.json")
-    return config
+    log("Loaded session from \(dir)/state.json")
+    return state
 }
 
-/// Reads config.json and applies its device setting to SimCtlClient.
-func applyProjectConfig() {
-    guard let config = readProjectConfig(),
-          let device = config.device, !device.isEmpty else {
+/// Reads state.json and applies its device setting to SimCtlClient.
+func applySessionState() {
+    guard let state = readSessionState(),
+          let device = state.device, !device.isEmpty else {
         return
     }
-    // Config device overrides the VCS-root heuristic, but not explicit --device flags
+    // Session device overrides the VCS-root heuristic, but not explicit --device flags
     if SimCtlClient.defaultDeviceName == nil || SimCtlClient.defaultDeviceName == computeDefaultDeviceName() {
         SimCtlClient.defaultDeviceName = device
-        log("Config: device = \(device)")
+        log("Session: device = \(device)")
     }
 }
 
@@ -129,7 +129,7 @@ func extractDouble(_ value: Value?) -> Double? {
 
 let udidSchema: Value = .object([
     "type": .string("string"),
-    "description": .string("Name or UDID of target simulator (auto-detected from config or VCS root if omitted)"),
+    "description": .string("Name or UDID of target simulator (auto-detected from session or VCS root if omitted)"),
 ])
 
 // MARK: - Selector schema (reused across selector-based tools)
@@ -225,8 +225,7 @@ struct DeviceNotBootedError: Error, LocalizedError {
 // MARK: - Simulator cache
 
 /// Caches device info, AXP accessibility bridge, and HID clients.
-/// Device info (UDID + name) is cached both in-memory (for MCP server mode)
-/// and on disk at /tmp (for CLI mode, where each invocation is a fresh process).
+/// Device info (UDID + name) is cached in-memory (for MCP server mode).
 actor SimulatorCache {
     static let shared = SimulatorCache()
 
@@ -242,13 +241,10 @@ actor SimulatorCache {
 
     private let deviceTTL: Duration = .seconds(30)
 
-    // MARK: - Filesystem device cache
-
     /// Resolves device UDID, checking (in order):
     /// 1. Explicit identifier (UUID or simulator name)
     /// 2. In-memory cache (for MCP server mode)
-    /// 3. Filesystem cache at /tmp (for CLI mode)
-    /// 4. Direct CoreSimulator API call
+    /// 3. Direct CoreSimulator API call
     ///
     /// After resolution, verifies the device is booted and throws a descriptive
     /// error with boot commands if it's shutdown.
@@ -279,24 +275,9 @@ actor SimulatorCache {
             return cached.udid
         }
 
-        // Try filesystem cache (survives across CLI invocations)
-        if let fsDevice = Self.readDeviceCacheFromDisk() {
-            // Skip stale cache if it doesn't match the configured default device
-            let entry = DeviceCacheEntry(udid: fsDevice.udid, name: fsDevice.name)
-            if entry.matches(defaultDeviceName: SimCtlClient.defaultDeviceName) {
-                // Validate the cached device is still booted
-                let device = try SimCtlClient.resolveDevice(fsDevice.udid)
-                try Self.validateBooted(device)
-                deviceCache = DeviceCache(udid: fsDevice.udid, name: fsDevice.name, timestamp: now)
-                fputs("[iosef] Using device \"\(fsDevice.name ?? fsDevice.udid)\" (\(fsDevice.udid)) — cached from recent CLI invocation\n", stderr)
-                return fsDevice.udid
-            }
-        }
-
         let device = try SimCtlClient.resolveDevice(nil)
         try Self.validateBooted(device)
         deviceCache = DeviceCache(udid: device.udid, name: device.name, timestamp: now)
-        Self.writeDeviceCacheToDisk(udid: device.udid, name: device.name)
         let reason: String
         if SimCtlClient.defaultDeviceName != nil {
             reason = "resolved via CoreSimulator (matched project/VCS name)"
@@ -305,44 +286,6 @@ actor SimulatorCache {
         }
         fputs("[iosef] Using device \"\(device.name)\" (\(device.udid)) — \(reason)\n", stderr)
         return device.udid
-    }
-
-    /// Cache file path inside the active config dir's cache/ subdirectory.
-    private static var diskCachePath: String {
-        let dir = ensureStateDir()
-        return dir + "/cache/device.json"
-    }
-
-    private static let diskCacheTTL: TimeInterval = 30
-
-    private struct DiskDeviceCache: Codable {
-        let udid: String
-        let name: String?
-    }
-
-    private static func readDeviceCacheFromDisk() -> DiskDeviceCache? {
-        let path = diskCachePath
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: path) else { return nil }
-
-        // Check mtime for TTL
-        guard let attrs = try? fm.attributesOfItem(atPath: path),
-              let mtime = attrs[.modificationDate] as? Date,
-              Date().timeIntervalSince(mtime) < diskCacheTTL else {
-            return nil
-        }
-
-        guard let data = fm.contents(atPath: path),
-              let cached = try? JSONDecoder().decode(DiskDeviceCache.self, from: data) else {
-            return nil
-        }
-        return cached
-    }
-
-    private static func writeDeviceCacheToDisk(udid: String, name: String?) {
-        let cached = DiskDeviceCache(udid: udid, name: name)
-        guard let data = try? JSONEncoder().encode(cached) else { return }
-        FileManager.default.createFile(atPath: diskCachePath, contents: data)
     }
 
     /// Checks whether a string is a valid UUID (8-4-4-4-12 hex format).
@@ -1170,8 +1113,8 @@ func computeDefaultDeviceName() -> String? {
 func setupGlobals() {
     SimCtlClient.defaultDeviceName = computeDefaultDeviceName()
 
-    // Config file overrides VCS heuristic (but not explicit --device flags)
-    applyProjectConfig()
+    // Session state overrides VCS heuristic (but not explicit --device flags)
+    applySessionState()
 
     if let timeoutStr = ProcessInfo.processInfo.environment["IOSEF_TIMEOUT"],
        let timeoutSecs = Double(timeoutStr), timeoutSecs > 0 {
@@ -1191,10 +1134,10 @@ struct CommonOptions: ParsableArguments {
     @Option(name: [.long, .customLong("udid", withSingleDash: false)], help: "Simulator name or UDID (auto-detected if omitted)")
     var device: String? = nil
 
-    @Flag(name: .long, help: "Use local config (./.iosef/)")
+    @Flag(name: .long, help: "Use local session (./.iosef/)")
     var local: Bool = false
 
-    @Flag(name: .long, help: "Use global config (~/.iosef/)")
+    @Flag(name: .long, help: "Use global session (~/.iosef/)")
     var global: Bool = false
 
     /// Adds the device identifier to a tool arguments dictionary (as "udid" key for MCP compatibility).
@@ -1257,7 +1200,7 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
                     try imageData.write(to: URL(fileURLWithPath: path))
                     print("Image (\(mimeType)) saved to \(path)")
                 } else {
-                    let cacheDir = ensureStateDir() + "/cache"
+                    let cacheDir = ensureSessionDir() + "/cache"
                     let timestamp = Int(Date().timeIntervalSince1970)
                     let ext = mimeType.split(separator: "/").last.map(String.init) ?? "jpg"
                     let screenshotPath = cacheDir + "/screenshot_\(timestamp).\(ext)"
@@ -1304,17 +1247,17 @@ struct SimulatorCLI: AsyncParsableCommand {
             Getting Started:
               iosef start --local --device "my-sim"
 
-              This creates .iosef/config.json in the current directory, \
-              boots the simulator, and opens Simulator.app. Subsequent commands \
-              auto-detect the device from the config file.
+              Creates a session directory (.iosef/) with state.json in the current \
+              directory, boots the simulator, and opens Simulator.app. Subsequent \
+              commands auto-detect the device from the session.
 
-            Config Directory:
+            Session:
               Local:  ./.iosef/   (created with start --local)
               Global: ~/.iosef/   (default)
 
-              The local directory takes priority when it exists. Use --local or \
-              --global on any command to override. Config stores the device name \
-              and cached state (device resolution, screenshots without --output).
+              The local directory takes priority when ./.iosef/state.json exists. \
+              Use --local or --global on any command to override. The session stores \
+              the device name and cached state (screenshots without --output).
 
             Coordinates:
               All commands use iOS points. The accessibility tree reports positions as
@@ -1323,7 +1266,7 @@ struct SimulatorCLI: AsyncParsableCommand {
 
             Device Resolution:
               When --device is omitted, the CLI resolves the target simulator in order:
-              1. config.json device field (local, then global)
+              1. state.json device field (local session, then global)
               2. VCS root directory name (git or jj)
               3. Any booted simulator
               Pass --device explicitly (name or UDID) to override.
@@ -1499,9 +1442,9 @@ struct GetBootedSimID: AsyncParsableCommand {
 struct Start: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "start",
-        abstract: "Set up project config and boot the simulator.",
+        abstract: "Set up a session and boot the simulator.",
         discussion: """
-            Creates a config directory, resolves the target device, boots the \
+            Creates a session directory, resolves the target device, boots the \
             simulator if needed, and opens Simulator.app.
 
             With --local, creates ./.iosef/ in the current directory. \
@@ -1509,7 +1452,7 @@ struct Start: AsyncParsableCommand {
 
             Device resolution order:
               1. --device flag
-              2. Existing config file device field
+              2. Existing state.json device field
               3. VCS root directory name
 
             Examples:
@@ -1527,14 +1470,14 @@ struct Start: AsyncParsableCommand {
 
         // 1. Resolve device name
         let vcsName = computeDefaultDeviceName()
-        let existingConfig = readProjectConfig()
-        let deviceName = common.device ?? existingConfig?.device ?? vcsName
+        let existingState = readSessionState()
+        let deviceName = common.device ?? existingState?.device ?? vcsName
 
-        // 2. Create state directory and write config
-        let dir = ensureStateDir()
-        let config = ProjectConfig(device: deviceName)
-        try writeProjectConfig(config, to: dir)
-        log("Wrote config to \(dir)/config.json")
+        // 2. Create session directory and write state
+        let dir = ensureSessionDir()
+        let state = SessionState(device: deviceName)
+        try writeSessionState(state, to: dir)
+        log("Wrote session to \(dir)/state.json")
 
         // 3. Boot the simulator if not already booted
         if let name = deviceName {
@@ -1558,7 +1501,7 @@ struct Start: AsyncParsableCommand {
         let displayName = deviceName ?? "default"
         let scopeLabel = common.local ? "local" : "global"
         print("Started (\(scopeLabel)): \(displayName)")
-        print("Config: \(dir)/config.json")
+        print("Session: \(dir)/state.json")
     }
 }
 
