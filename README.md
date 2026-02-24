@@ -15,13 +15,33 @@ Each CLI invocation is a short-lived process. The simulator runs independently a
 
 ## Installation
 
+This Swift tool can be installed directly [from PyPI](https://pypi.org/project/iosef/) using `pip` or `uv`.
+
+You can run it without installing it first using `uvx`:
+
+```bash
+uvx iosef --help
+```
+
+Or install it, then run `iosef --help`:
+
+```bash
+uv tool install iosef
+# or
+pip install iosef
+```
+
+You can also build from source:
+
 ```bash
 swift build -c release
 # or
 ./scripts/build.sh   # builds + installs to ~/.local/bin/iosef
 ```
 
-Requirements: Swift 6.1+, macOS 13+, Xcode with an iOS simulator runtime installed.
+Compiled binaries are available [on the releases page](https://github.com/riwsky/iosef/releases).
+
+Building from source requires Swift 6.1+, macOS 13+, and Xcode with an iOS simulator runtime installed.
 
 ## Usage
 
@@ -123,15 +143,6 @@ Every CLI subcommand is also available as an MCP tool. Configure in your MCP cli
   }
 }
 ```
-
-## Why this exists
-
-- **CLI-first**: Every tool is also a CLI subcommand, so agents can string calls together, pipe and filter outputs, and save context window space vs. multiple MCP round-trips.
-- **Performance**: Stays in-process as much as possible rather than shelling out, for faster hot-loop operations like tapping and screenshotting.
-- **Screenshots in iOS point space**: Screenshots are resized to match iOS point coordinates, so visual agents can tap where they see — no coordinate translation needed, even without an accessibility tree.
-- **Semantic interface**: Accept simulator names instead of UDIDs. Tap by accessibility label instead of just coordinates. Query the AX tree with selectors (`--role`, `--name`, `--identifier`).
-- **Scriptable verification**: [Rodney](https://github.com/simonw/rodney)-inspired tools like `wait` and `exists` make it easy to write verifiable interaction replays with [showboat](https://github.com/riwsky/showboat).
-- **Simple install**: Single Swift package, no idb, no companion app.
 
 ## Coordinate system
 
@@ -272,22 +283,14 @@ State is stored in `~/.iosef/state.json` (global) or `./.iosef/state.json` (loca
 | `--version` | Print version and exit |
 | `-h`, `--help` | Show help |
 
-## How it works
-
-- **IndigoHID** for touch injection — taps and swipes are sent as HID events directly to the simulator, bypassing `simctl` for lower latency
-- **CoreSimulator private APIs** for device lifecycle — boot, shutdown, install, and launch without shelling out
-- **AXP accessibility bridge** to read the full accessibility tree from the simulator's UI, powering selector commands and coordinate discovery
-- **MCP over stdio** — the `mcp` subcommand exposes every CLI tool as an MCP tool, using JSON-RPC over stdin/stdout
-- **Short-lived CLI, persistent simulator** — each invocation reads `state.json`, connects, acts, and exits; the simulator keeps running
-
 ## Acknowledgments
 
 This project draws inspiration from:
 
-- [joshuayoes/ios-simulator-mcp](https://github.com/joshuayoes/ios-simulator-mcp) — the original iOS Simulator MCP server that motivated this rewrite
-- [facebook/idb](https://github.com/facebook/idb) — Meta's iOS development bridge, whose approach to simulator interaction informed the design
-- [ldomaradzki/xctree](https://github.com/ldomaradzki/xctree) — a useful reference for working with the simulator's accessibility tree
-- [simonw/rodney](https://github.com/simonw/rodney) — whose CLI design and goal of usage with showboat for executable demos inspired the scripting-oriented tools
+- [facebook/idb](https://github.com/facebook/idb) — Meta's iOS simulator CLI, where most of the simulator implementation ideas came from. In comparison, iosef trades off performance for a simpler interface (scaling screenshots to match iOS point space; targeting taps via accessibility labels) and deployment model (no companion process).
+- [simonw/rodney](https://github.com/simonw/rodney) — Simon Willison's Chrome interaction CLI, where most of the interface ideas came from (subcommand names, session model, documentation structure). Iosef is arguably just "rodney, but for iOS".
+- [joshuayoes/ios-simulator-mcp](https://github.com/joshuayoes/ios-simulator-mcp) — the original iOS Simulator MCP server. Got me interested in this space — iosef actually started out as an attempt to port this to swift for performance. Modern agents have a better time using CLI tools, though, leading to a shift in focus.
+- [ldomaradzki/xctree](https://github.com/ldomaradzki/xctree) — another useful reference for working with the simulator's accessibility tree.
 
 ## License
 
