@@ -66,4 +66,55 @@ struct SessionStateTests {
         #expect(state == nil)
     }
 
+    // MARK: - isIosefGitignored
+
+    @Test("no .gitignore returns false")
+    func noGitignore() {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        #expect(isIosefGitignored(in: tmp) == false)
+    }
+
+    @Test(".gitignore without .iosef returns false")
+    func gitignoreWithoutIosef() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        try ".build/\n*.xcodeproj/\n".write(toFile: tmp + "/.gitignore", atomically: true, encoding: .utf8)
+        #expect(isIosefGitignored(in: tmp) == false)
+    }
+
+    @Test(".gitignore with .iosef/ returns true")
+    func gitignoreWithTrailingSlash() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        try ".build/\n.iosef/\n".write(toFile: tmp + "/.gitignore", atomically: true, encoding: .utf8)
+        #expect(isIosefGitignored(in: tmp) == true)
+    }
+
+    @Test(".gitignore with .iosef (no trailing slash) returns true")
+    func gitignoreWithoutTrailingSlash() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        try ".build/\n.iosef\n".write(toFile: tmp + "/.gitignore", atomically: true, encoding: .utf8)
+        #expect(isIosefGitignored(in: tmp) == true)
+    }
+
+    @Test("commented .iosef/ line is ignored")
+    func commentedLineIgnored() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        try "# .iosef/\n.build/\n".write(toFile: tmp + "/.gitignore", atomically: true, encoding: .utf8)
+        #expect(isIosefGitignored(in: tmp) == false)
+    }
+
 }

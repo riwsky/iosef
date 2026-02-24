@@ -178,7 +178,7 @@ iosef --local status
 2. VCS root directory name (git or jj)
 3. Any booted simulator
 
-Add `.iosef/` to your `.gitignore` to keep session state out of version control.
+Add `.iosef/` to your `.gitignore` to keep session state out of version control. The `skills/ios-simulator-interaction/` directory contains a workflow guide for Claude Code users.
 
 ## Exit codes
 

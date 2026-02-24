@@ -418,6 +418,10 @@ struct Start: AsyncParsableCommand {
         try writeSessionState(state, to: dir)
         log("Wrote session to \(dir)/state.json")
 
+        if common.local && !isIosefGitignored(in: FileManager.default.currentDirectoryPath) {
+            fputs("[iosef] Warning: .iosef/ is not in your .gitignore. Add it to keep session state out of version control.\n", stderr)
+        }
+
         // 3. Boot the simulator if not already booted, creating if needed
         if let name = deviceName {
             var device = try SimCtlClient.findDeviceByName(name)
@@ -551,6 +555,10 @@ struct Connect: AsyncParsableCommand {
         let dir = ensureSessionDir()
         let state = SessionState(device: device.name)
         try writeSessionState(state, to: dir)
+
+        if common.local && !isIosefGitignored(in: FileManager.default.currentDirectoryPath) {
+            fputs("[iosef] Warning: .iosef/ is not in your .gitignore. Add it to keep session state out of version control.\n", stderr)
+        }
 
         print("Connected to \"\(device.name)\" (\(device.udid))")
         print("Session: \(dir)/state.json")

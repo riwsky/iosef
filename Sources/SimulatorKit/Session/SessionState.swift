@@ -71,3 +71,19 @@ public func writeSessionState(_ state: SessionState, to dir: String) throws {
     let statePath = dir + "/state.json"
     FileManager.default.createFile(atPath: statePath, contents: data)
 }
+
+// MARK: - Gitignore check
+
+/// Returns true if `.iosef` or `.iosef/` appears as a non-comment line in `cwd/.gitignore`.
+public func isIosefGitignored(in cwd: String) -> Bool {
+    let gitignorePath = cwd + "/.gitignore"
+    guard let contents = try? String(contentsOfFile: gitignorePath, encoding: .utf8) else {
+        return false
+    }
+    for line in contents.components(separatedBy: .newlines) {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+        if trimmed == ".iosef" || trimmed == ".iosef/" { return true }
+    }
+    return false
+}

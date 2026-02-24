@@ -1,9 +1,9 @@
 ---
-name: ios-simulator-workflow
-description: Validate iOS UI changes using the iOS Simulator. Use when building, testing, or verifying SwiftUI/UIKit changes on the iOS Simulator — tapping buttons, reading accessibility trees, testing drag-reorder, swipe-to-delete, scrolling, and general UI interaction. Invoke this skill whenever CLAUDE.md says to use the simulator for validation.
+name: ios-simulator-interaction
+description: Use when building, testing, or verifying SwiftUI/UIKit changes on the iOS Simulator — tapping buttons, reading accessibility trees, testing drag-reorder, swipe-to-delete, scrolling, and general UI interaction. Invoke this skill whenever CLAUDE.md says to use the simulator for validation.
 ---
 
-# iOS Simulator Workflow
+# iOS Simulator Interaction
 
 Use `iosef` (via Bash) as the primary tool for all simulator interactions.
 
@@ -15,14 +15,16 @@ Set up a project config directory so subsequent commands auto-detect the target 
 iosef start --local --device "my-sim-name"
 ```
 
-This creates `.ios-simulator-mcp/config.json` in the current directory, boots the simulator, and opens Simulator.app. Without `--local`, config goes to `~/.ios-simulator-mcp/` (global).
+This creates `.iosef/state.json` in the current directory, boots the simulator, and opens Simulator.app. Without `--local`, config goes to `~/.iosef/` (global).
+
+Add `.iosef/` to your `.gitignore` to keep session state out of version control. The CLI warns on `start` and `connect` if it's missing.
 
 ## Build-Test Loop
 
 1. Start the simulator: `iosef start --local --device "<name>"` (first time)
 2. Build and launch the app (project-specific — check CLAUDE.md)
-3. Interact — prefer selector commands (`tap` with selectors, `type` with selectors, `exists`, `wait`) over coordinate-based (`tap --x/--y`, `swipe`). Use `describe` when you need to survey the full screen or elements lack stable labels.
-4. Take a screenshot: `iosef view` (saves to `.ios-simulator-mcp/cache/`; use `--output /path/to/file.png` for a specific path)
+3. Interact — prefer selector commands (`tap`, `type` with selectors, `exists`, `wait`) over coordinate-based (`tap_point`, `swipe`). Use `describe_all` when you need to survey the full screen or elements lack stable labels.
+4. Take a screenshot: `iosef view` (saves to `.iosef/cache/`; use `--output /path/to/file.png` for a specific path)
 5. Screenshot again after each action to verify result
 
 ## CLI Reference
@@ -31,14 +33,14 @@ All commands use named arguments. Tool names have no `ui_` prefix. Run `iosef <s
 
 ### Selector Commands (preferred)
 
-Use selector commands for 1-step interactions instead of describe → parse → tap --x/--y:
+Use selector commands for 1-step interactions instead of describe_all → parse → tap_point:
 
 ```bash
-# Tap by selector (1 step instead of describe → parse → tap --x/--y)
+# Tap by selector (replaces describe_all → parse → tap_point)
 iosef tap --name "Sign In"
 iosef tap --name "Menu" --duration 0.5  # long press
 
-# Focus + type in one step (replaces tap --x/--y → sleep → type)
+# Focus + type in one step (replaces tap_point → sleep → type)
 iosef type --role AXTextField --text "hello"
 iosef type --name "Search" --text "query"
 
@@ -60,13 +62,13 @@ iosef wait --name "Success" --timeout 5
 
 ```bash
 # AX tree — use when elements lack labels or you need to survey the full screen
-iosef describe
-iosef describe --depth 2    # limit tree depth
-iosef describe --x 200 --y 400
+iosef describe_all
+iosef describe_all --depth 2    # limit tree depth
+iosef describe_point --x 200 --y 400
 
 # Tap at coordinates
-iosef tap --x 201 --y 740
-iosef tap --x 201 --y 740 --duration 1.0   # long press
+iosef tap_point --x 201 --y 740
+iosef tap_point --x 201 --y 740 --duration 1.0   # long press
 
 # Swipe / scroll
 iosef swipe --x-start 200 --y-start 300 --x-end 200 --y-end 700 --duration 0.3
@@ -74,19 +76,19 @@ iosef swipe --x-start 200 --y-start 300 --x-end 200 --y-end 700 --duration 0.3
 # Type text (requires a field to already have focus)
 iosef type --text "hello"
 
-# Screenshot (saves to .ios-simulator-mcp/cache/ by default)
+# Screenshot (saves to .iosef/cache/ by default)
 iosef view
 iosef view --output /tmp/sim.png  # explicit path
 
 # Chain for rapid repeated actions
-iosef tap --x 201 --y 740 && sleep 0.3 && iosef tap --x 201 --y 740
+iosef tap_point --x 201 --y 740 && sleep 0.3 && iosef tap_point --x 201 --y 740
 ```
 
 **Screenshot fallback**: If `view` fails with a Screen Recording error, use the MCP `view` tool instead.
 
 ## Reading the AX Tree
 
-Always `describe` before interacting. The format is:
+Always `describe_all` before interacting. The format is:
 
 ```
 AXButton "Label" (center_x±half_width, center_y±half_height)
@@ -135,7 +137,7 @@ iosef swipe \
 
 ### Ensuring drag handles are targetable
 
-UIKit `UIImageView` drag handles are often hidden from accessibility. Add labels so they appear in `describe`:
+UIKit `UIImageView` drag handles are often hidden from accessibility. Add labels so they appear in `describe_all`:
 
 ```swift
 dragHandle.isAccessibilityElement = true
@@ -143,6 +145,18 @@ dragHandle.accessibilityLabel = "Reorder"
 ```
 
 Then the AX tree shows: `AXImage "Reorder" (374±12, 221±7)` — use center (374, 221).
+
+## Cleanup
+
+When you're done with a simulator session:
+
+```bash
+iosef stop
+```
+
+This shuts down the simulator, deletes the device, and removes the session directory.
+
+For worktree-based workflows where each worktree gets its own simulator, consider adding a `WorktreeRemove` hook that runs `xcrun simctl delete "$NAME"` to prevent orphaned simulators from accumulating.
 
 ## Proof of Work
 
@@ -169,7 +183,7 @@ showboat verify demos/my-feature-demo.md  # must pass before done
 
 ## Tips
 
-- **Blank AX tree?** If `describe` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
+- **Blank AX tree?** If `describe_all` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
 - **Selector commands first**: Use `tap`/`type` (with selectors)/`exists` when elements have stable names. Fall back to coordinates for unlabeled elements and swipe gestures.
 - **AX tree first**: Never guess coordinates. Always read the tree.
 - **Screenshot after every action**: Confirm the UI state changed as expected.
