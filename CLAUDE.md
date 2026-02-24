@@ -22,6 +22,6 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 
 *Demos:* Use `showboat` to create executable demo documents in `demos/`. Build incrementally with `showboat init`, `note`, `exec`, `image`. Verify with `showboat verify`. See existing demos for format. Always `showboat verify` before considering a demo complete.
 
-*Releasing:* Use the `release` skill. It handles version bumping, building, tagging, and pushing. CI (`.github/workflows/release.yaml`) builds a universal2 binary and publishes to PyPI on `v*` tags.
+*Releasing:* See `.claude/skills/release/` for the full workflow. We are pre-1.0; use `v0.x.y` versions. Tag with `v{semver}` and push to trigger `.github/workflows/release.yaml`. In jj worktrees, use `git --git-dir=$(jj git root) tag ...` for git-only operations like tagging.
 
 *Build paths:* `swift build -c release` (SwiftPM) outputs to `.build/release/`. The `--arch` flag triggers Xcode build system which outputs to `.build/apple/Products/Release/`. CI uses SwiftPM-only builds.
