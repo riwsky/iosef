@@ -2,7 +2,6 @@ import Foundation
 import CoreGraphics
 import ImageIO
 @preconcurrency import CoreImage
-import IOSurface
 
 /// Captures screenshots of the iOS Simulator.
 /// - `captureSimulator`: IOSurface framebuffer → downscale to iOS points (coordinate-aligned)
@@ -10,8 +9,7 @@ import IOSurface
 public enum ScreenCapture {
 
     private static func log(_ message: String) {
-        guard verboseLogging else { return }
-        fputs("[ScreenCapture] \(message)\n", stderr)
+        logDiagnostic(message, prefix: "ScreenCapture")
     }
 
     // MARK: - Cached simctl path

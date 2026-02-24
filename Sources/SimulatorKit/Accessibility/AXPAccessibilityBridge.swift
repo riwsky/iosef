@@ -24,6 +24,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     private let iosPointSize: CGSize    // iOS point dimensions (e.g. 402x874)
     private var cachedRootFrame: CGRect?
 
+    private func setBridgeToken(_ token: String, on obj: AnyObject) {
+        obj.setValue(token, forKey: "bridgeDelegateToken")
+    }
+
     public init(udid: String) throws {
         self.bridge = PrivateFrameworkBridge.shared
         try bridge.ensureAXPLoaded()
@@ -57,9 +61,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         // SimDevice). Without this, each process-lifetime bridge leaks its
         // dispatcher + device XPC connection even after the bridge is released.
         (translator as AnyObject).setValue(nil, forKey: "bridgeTokenDelegate")
-        if verboseLogging {
-            FileHandle.standardError.write(Data("[AXPAccessibilityBridge] deinit — unset bridgeTokenDelegate\n".utf8))
-        }
+        logDiagnostic("deinit — unset bridgeTokenDelegate", prefix: "AXPAccessibilityBridge")
     }
 
     // MARK: - Public API
@@ -87,7 +89,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         }
 
         // Set the token on the translation object
-        (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+        setBridgeToken(token, on: translation as AnyObject)
 
         try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
 
@@ -96,7 +98,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         }
 
         (element as AnyObject).value(forKey: "translation").map {
-            ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+            setBridgeToken(token, on: $0 as AnyObject)
         }
 
         // Update cached root frame from this element (free — no extra XPC call)
@@ -128,9 +130,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(elapsed.totalSeconds * 1000)
-        if verboseLogging {
-            FileHandle.standardError.write(Data("[iosef] accessibility: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
-        }
+        logDiagnostic("accessibility: \(elementCount) elements in \(elapsedMs)ms")
 
         // Transform frames from macOS window coords to iOS points.
         // The AX root frame (e.g. 320x480) has a different aspect ratio than the iOS
@@ -140,9 +140,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
            rootFrame.width > 0, rootFrame.height > 0 {
             let uniformScale = Double(iosPointSize.width) / rootFrame.width
             let yOffset = (Double(iosPointSize.height) - rootFrame.height * uniformScale) / 2
-            if verboseLogging {
-                FileHandle.standardError.write(Data("[iosef] frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))\n".utf8))
-            }
+                logDiagnostic("frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))")
             return result.map { transformFrames($0, uniformScale: uniformScale, yOffset: yOffset, originX: rootFrame.x, originY: rootFrame.y) }
         }
         return result
@@ -171,7 +169,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             throw AXPBridgeError.noElementAtPoint(x: x, y: y)
         }
 
-        (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+        setBridgeToken(token, on: translation as AnyObject)
 
         try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
 
@@ -180,16 +178,14 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         }
 
         (element as AnyObject).value(forKey: "translation").map {
-            ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+            setBridgeToken(token, on: $0 as AnyObject)
         }
 
         var elementCount = 0
         var result = try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
         let elapsed = ContinuousClock.now - start
         let elapsedMs = Int(elapsed.totalSeconds * 1000)
-        if verboseLogging {
-            FileHandle.standardError.write(Data("[iosef] accessibility point: \(elementCount) elements in \(elapsedMs)ms\n".utf8))
-        }
+        logDiagnostic("accessibility point: \(elementCount) elements in \(elapsedMs)ms")
 
         // Transform frames from macOS window coords to iOS points (uniform scale + centering)
         if let rf = rootFrame, rf.width > 0, rf.height > 0 {
@@ -221,12 +217,12 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             arg2: token
         ) else { return nil }
 
-        (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+        setBridgeToken(token, on: translation as AnyObject)
 
         guard let element = macPlatformElement(from: translation) else { return nil }
 
         (element as AnyObject).value(forKey: "translation").map {
-            ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+            setBridgeToken(token, on: $0 as AnyObject)
         }
 
         let frameSel = NSSelectorFromString("accessibilityFrame")
@@ -350,7 +346,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         // Ensure this element's translation has the token set before accessing children.
         // AXPMacPlatformElement lazily resolves children via XPC using the token.
         if let trans = (element as AnyObject).value(forKey: "translation") as AnyObject? {
-            trans.setValue(token, forKey: "bridgeDelegateToken")
+            setBridgeToken(token, on: trans)
         }
 
         // Children
@@ -361,7 +357,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
                 let node: TreeNode = try autoreleasepool {
                     // Set bridgeDelegateToken on each child's translation
                     if let translation = (child as AnyObject).value(forKey: "translation") as AnyObject? {
-                        translation.setValue(token, forKey: "bridgeDelegateToken")
+                        setBridgeToken(token, on: translation)
                     }
                     return try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
                 }
@@ -413,14 +409,14 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
                         return
                     }
 
-                    (translation as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+                    setBridgeToken(token, on: translation as AnyObject)
 
                     guard let elem = macPlatformElement(from: translation) else {
                         return
                     }
 
                     (elem as AnyObject).value(forKey: "translation").map {
-                        ($0 as AnyObject).setValue(token, forKey: "bridgeDelegateToken")
+                        setBridgeToken(token, on: $0 as AnyObject)
                     }
 
                     // Serialize without recursing into children (they're likely empty too)
@@ -450,9 +446,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             probeY += step
         }
 
-        if verboseLogging {
-            FileHandle.standardError.write(Data("[iosef] grid scan: \(elements.count) elements discovered via hit-testing\n".utf8))
-        }
+        logDiagnostic("grid scan: \(elements.count) elements discovered via hit-testing")
         return elements
     }
 
@@ -580,7 +574,7 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
             do {
                 return try self.bridge.sendAccessibilityRequest(request, toDevice: dev, timeoutSeconds: xpcTimeout)
             } catch {
-                FileHandle.standardError.write(Data("[iosef] XPC call failed: \(error.localizedDescription)\n".utf8))
+                logDiagnostic("XPC call failed: \(error.localizedDescription)")
                 return Self.emptyAXPResponse()
             }
         }

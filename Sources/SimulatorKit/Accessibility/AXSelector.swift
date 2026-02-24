@@ -2,7 +2,7 @@ import Foundation
 
 /// Selector for finding accessibility tree nodes by role, name, and/or identifier.
 /// All non-nil criteria compose with AND logic.
-public struct AXSelector: Sendable {
+public struct AXSelector: Sendable, CustomStringConvertible {
     public let role: String?       // case-insensitive exact match on role
     public let name: String?       // case-insensitive substring match on label OR title
     public let identifier: String? // exact match on accessibilityIdentifier
@@ -15,6 +15,11 @@ public struct AXSelector: Sendable {
 
     public var isEmpty: Bool {
         role == nil && name == nil && identifier == nil
+    }
+
+    public var description: String {
+        [role.map { "role=\($0)" }, name.map { "name=\($0)" }, identifier.map { "identifier=\($0)" }]
+            .compactMap { $0 }.joined(separator: ", ")
     }
 
     public func matches(_ node: TreeNode) -> Bool {

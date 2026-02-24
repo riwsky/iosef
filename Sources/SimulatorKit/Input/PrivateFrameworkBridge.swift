@@ -100,19 +100,11 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     /// Looks up a SimDevice by UDID. Cached per UDID after first lookup.
     public func lookUpDevice(udid: String) throws -> AnyObject {
-        lock.lock()
-        if let cached = deviceCache[udid] {
-            lock.unlock()
+        if let cached = lock.withLock({ deviceCache[udid] }) {
             return cached
         }
-        lock.unlock()
-
         let device = try lookUpDeviceUncached(udid: udid)
-
-        lock.lock()
-        deviceCache[udid] = device
-        lock.unlock()
-
+        lock.withLock { deviceCache[udid] = device }
         return device
     }
 

@@ -16,10 +16,7 @@ public enum SimCtlClient {
     /// Used only for `open -a Simulator.app`.
     public static func run(_ command: String, arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
         let timeout = timeout ?? defaultTimeout
-        if verboseLogging {
-            let shortArgs = arguments.prefix(4).joined(separator: " ")
-            fputs("[SimCtl] run: \(command) \(shortArgs)...\n", stderr)
-        }
+        logDiagnostic("run: \(command) \(arguments.prefix(4).joined(separator: " "))...", prefix: "SimCtl")
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
@@ -137,9 +134,7 @@ public enum SimCtlClient {
             let candidates = [name, "\(name)-main"]
             for candidate in candidates {
                 if let device = devices.first(where: { $0.name == candidate && ($0.isAvailable ?? false) }) {
-                    if verboseLogging {
-                        fputs("[SimCtl] No explicit UDID provided; using simulator \"\(device.name)\" (\(device.udid)) inferred from VCS root directory\n", stderr)
-                    }
+                    logDiagnostic("No explicit UDID provided; using simulator \"\(device.name)\" (\(device.udid)) inferred from VCS root directory", prefix: "SimCtl")
                     return device
                 }
             }
@@ -147,9 +142,7 @@ public enum SimCtlClient {
 
         // Fall back to first booted simulator
         if let booted = devices.first(where: { $0.state == "Booted" }) {
-            if verboseLogging {
-                fputs("[SimCtl] No explicit UDID provided; using first booted simulator \"\(booted.name)\" (\(booted.udid))\n", stderr)
-            }
+            logDiagnostic("No explicit UDID provided; using first booted simulator \"\(booted.name)\" (\(booted.udid))", prefix: "SimCtl")
             return booted
         }
 

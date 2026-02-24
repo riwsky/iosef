@@ -27,9 +27,7 @@ public final class IndigoHIDClient: @unchecked Sendable {
         // triggering their ObjC dealloc which closes Mach ports and XPC
         // connections. Without explicit cache cleanup, these stay alive for
         // the process lifetime and accumulate across restarts.
-        if verboseLogging {
-            FileHandle.standardError.write(Data("[IndigoHIDClient] deinit — releasing HID client\n".utf8))
-        }
+        logDiagnostic("deinit — releasing HID client", prefix: "IndigoHIDClient")
     }
 
     // MARK: - Public API
@@ -97,11 +95,7 @@ public final class IndigoHIDClient: @unchecked Sendable {
     /// Sends a hardware button press (home, lock, side, etc.).
     public func pressButton(source: UInt32, direction: Int32) {
         guard let fn = bridge.messageForButton else { return }
-        let msg = fn(Int32(source), direction, Int32(IndigoButtonTargetConst.hardware))
-        let size = malloc_size(msg)
-        let data = Data(bytes: msg, count: size)
-        free(msg)
-        bridge.sendMessage(data, to: client)
+        sendIndigoMessage(fn(Int32(source), direction, Int32(IndigoButtonTargetConst.hardware)))
     }
 
     // MARK: - Keyboard Input
@@ -129,9 +123,12 @@ public final class IndigoHIDClient: @unchecked Sendable {
     /// Sends a single HID keyboard event via IndigoHIDMessageForKeyboardArbitrary.
     private func sendKeyEvent(keyCode: UInt8, direction: Int32) {
         guard let fn = bridge.messageForKeyboardArbitrary else { return }
-        let msg = fn(Int32(keyCode), direction)
-        let size = malloc_size(msg)
-        let data = Data(bytes: msg, count: size)
+        sendIndigoMessage(fn(Int32(keyCode), direction))
+    }
+
+    /// Converts a malloc'd IndigoMessage pointer to Data, frees the pointer, and sends it.
+    private func sendIndigoMessage(_ msg: UnsafeMutablePointer<IndigoMessage>) {
+        let data = Data(bytes: msg, count: malloc_size(msg))
         free(msg)
         bridge.sendMessage(data, to: client)
     }
