@@ -32,20 +32,20 @@ func allTools() -> [Tool] {
     }
 
     if !isFiltered("type") {
+        var typeSchema = selectorProperties
+        typeSchema["text"] = .object([
+            "type": .string("string"),
+            "description": .string("Text to input"),
+            "maxLength": .int(500),
+            "pattern": .string(#"^[\x20-\x7E]+$"#),
+        ])
+        typeSchema["udid"] = udidSchema
         tools.append(Tool(
             name: "type",
-            description: "Type text into the focused field in the iOS Simulator. Prefer input to find, focus, and type in one step.",
+            description: "Type text in the iOS Simulator. Two modes: (1) Bare mode (no selectors): types into the currently focused field. (2) Selector mode: finds an element by role/name/identifier, taps it to focus, then types. Combines find + tap + type in one step.",
             inputSchema: .object([
                 "type": .string("object"),
-                "properties": .object([
-                    "text": .object([
-                        "type": .string("string"),
-                        "description": .string("Text to input"),
-                        "maxLength": .int(500),
-                        "pattern": .string(#"^[\x20-\x7E]+$"#),
-                    ]),
-                    "udid": udidSchema,
-                ]),
+                "properties": .object(typeSchema),
                 "required": .array([.string("text")]),
             ])
         ))
@@ -210,24 +210,6 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("input") {
-        var inputSchema = selectorSchema
-        inputSchema["text"] = .object([
-            "type": .string("string"),
-            "description": .string("Text to type after tapping the element"),
-            "maxLength": .int(500),
-        ])
-        tools.append(Tool(
-            name: "input",
-            description: "Find an element by selector, tap it to focus, then type text. Combines find + tap + type into one step.",
-            inputSchema: .object([
-                "type": .string("object"),
-                "properties": .object(inputSchema),
-                "required": .array([.string("text")]),
-            ])
-        ))
-    }
-
     if !isFiltered("wait") {
         var waitSchema = selectorSchema
         waitSchema["timeout"] = .object([
@@ -295,7 +277,7 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
         case "tap":
             return try await handleTap(params)
         case "type":
-            return try await handleUIType(params)
+            return try await handleType(params)
         case "swipe":
             return try await handleUISwipe(params)
         case "view":
@@ -312,10 +294,6 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleCount(params)
         case "text":
             return try await handleText(params)
-        case "tap_element":
-            return try await handleTap(params)
-        case "input":
-            return try await handleInput(params)
         case "wait":
             return try await handleWait(params)
         case "log_show":

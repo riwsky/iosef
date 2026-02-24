@@ -229,10 +229,10 @@ struct SimulatorCLI: AsyncParsableCommand {
 
             Example — selector-based (preferred):
               # Tap a button by name
-              iosef tap_element --name "Sign In"
+              iosef tap --name "Sign In"
 
-              # Type into a field by role
-              iosef input --role AXTextField --text "hello"
+              # Type into a field by name
+              iosef type --name "Search" --text "hello"
 
               # Wait for a screen to load
               iosef wait --name "Welcome"
@@ -277,8 +277,6 @@ struct SimulatorCLI: AsyncParsableCommand {
                 Exists.self,
                 Count.self,
                 Text.self,
-                TapElement.self,
-                Input.self,
                 Wait.self,
             ]),
             CommandGroup(name: "Logging:", subcommands: [
@@ -752,28 +750,34 @@ struct Tap: AsyncParsableCommand {
 struct UIType: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "type",
-        abstract: "Type text into the focused field.",
+        abstract: "Type text, optionally finding and tapping an element first.",
         discussion: """
-            Sends keyboard HID events to type text into whatever field currently has \
-            focus in the simulator. Only printable ASCII characters (0x20-0x7E) are supported.
+            Two modes:
 
-            Tip: prefer input to find a field, tap it, and type in one step.
+            Bare mode (no selectors): types text into whatever field currently has \
+            focus. Only printable ASCII characters (0x20-0x7E) are supported.
 
-            Tap a text field first with tap to ensure it has focus.
+            Selector mode (with --role/--name/--identifier): finds the first matching \
+            element, taps its center to focus, waits briefly for the keyboard, then \
+            types the text. Combines find + tap + type into one step.
 
             Examples:
               iosef type --text hello
               iosef type --text "Hello World"
+              iosef type --name "Search" --text "query"
+              iosef type --role AXTextField --text "hello"
             """
     )
 
     @OptionGroup var common: CommonOptions
+    @OptionGroup var selector: SelectorOptions
 
     @Option(name: .long, help: "Text to input")
     var text: String
 
     func run() async throws {
-        var args: [String: Value] = ["text": .string(text)]
+        var args = selector.toArguments()
+        args["text"] = .string(text)
         common.addDevice(to: &args)
         try await runToolCLI(toolName: "type", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
@@ -1019,66 +1023,6 @@ struct Text: AsyncParsableCommand {
         var args = selector.toArguments()
         common.addDevice(to: &args)
         try await runToolCLI(toolName: "text", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
-    }
-}
-
-struct TapElement: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "tap_element",
-        abstract: "Find an element by selector and tap it.",
-        discussion: """
-            Searches the accessibility tree for the first matching element and taps \
-            its center. Combines find + tap into one step. Errors if no match.
-
-            For long-press, pass --duration (in seconds).
-
-            Examples:
-              iosef tap_element --name "Sign In"
-              iosef tap_element --role AXButton --name "Submit"
-              iosef tap_element --name "Menu" --duration 0.5
-            """
-    )
-
-    @OptionGroup var common: CommonOptions
-    @OptionGroup var selector: SelectorOptions
-
-    @Option(name: .long, help: "Press duration in seconds (for long-press)")
-    var duration: Double?
-
-    func run() async throws {
-        var args = selector.toArguments()
-        if let duration { args["duration"] = .double(duration) }
-        common.addDevice(to: &args)
-        try await runToolCLI(toolName: "tap_element", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
-    }
-}
-
-struct Input: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "input",
-        abstract: "Find an element, tap it, then type text.",
-        discussion: """
-            Searches for an element by selector, taps its center to focus, \
-            waits briefly for the keyboard, then types the given text. \
-            Combines find + tap + type into one step.
-
-            Examples:
-              iosef input --role AXTextField --text "hello"
-              iosef input --name "Search" --text "query"
-            """
-    )
-
-    @OptionGroup var common: CommonOptions
-    @OptionGroup var selector: SelectorOptions
-
-    @Option(name: .long, help: "Text to type after tapping the element")
-    var text: String
-
-    func run() async throws {
-        var args = selector.toArguments()
-        args["text"] = .string(text)
-        common.addDevice(to: &args)
-        try await runToolCLI(toolName: "input", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 

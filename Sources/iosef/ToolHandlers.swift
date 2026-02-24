@@ -45,16 +45,27 @@ func handleDescribe(_ params: CallTool.Parameters) async throws -> CallTool.Resu
     }
 }
 
-func handleUIType(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+func handleType(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     guard let text = params.arguments?["text"]?.stringValue else {
         return .init(content: [.text("Missing required parameter: text")], isError: true)
     }
 
-    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
-    hidClient.typeText(text)
+    let hasSelector = params.arguments?["role"]?.stringValue != nil
+        || params.arguments?["name"]?.stringValue != nil
+        || params.arguments?["identifier"]?.stringValue != nil
 
-    return .init(content: [.text("Typed successfully")])
+    if hasSelector {
+        let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
+        hidClient.tap(x: center.x, y: center.y)
+        usleep(100_000) // 100ms delay for keyboard to appear
+        hidClient.typeText(text)
+        return .init(content: [.text("Tapped (\(Int(center.x)), \(Int(center.y))) and typed \"\(text)\"")])
+    } else {
+        let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+        let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+        hidClient.typeText(text)
+        return .init(content: [.text("Typed successfully")])
+    }
 }
 
 func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -225,20 +236,6 @@ func handleTap(_ params: CallTool.Parameters) async throws -> CallTool.Result {
     }
 
     return .init(content: [.text("Tapped element at (\(Int(center.x)), \(Int(center.y)))")])
-}
-
-func handleInput(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    guard let text = params.arguments?["text"]?.stringValue else {
-        return .init(content: [.text("Missing required parameter: text")], isError: true)
-    }
-
-    let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
-
-    hidClient.tap(x: center.x, y: center.y)
-    usleep(100_000) // 100ms delay for keyboard to appear
-    hidClient.typeText(text)
-
-    return .init(content: [.text("Tapped (\(Int(center.x)), \(Int(center.y))) and typed \"\(text)\"")])
 }
 
 func handleWait(_ params: CallTool.Parameters) async throws -> CallTool.Result {
