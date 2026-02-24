@@ -59,12 +59,12 @@ iosef stop                                # Shut down, delete device, remove ses
 ### Inspect the UI
 
 ```bash
-iosef describe_all                        # Dump the full accessibility tree
-iosef describe_all --depth 2              # Limit tree depth
-iosef describe_all --json | jq '.. | objects | select(.role == "button")'
+iosef describe                            # Dump the full accessibility tree
+iosef describe --depth 2                  # Limit tree depth
+iosef describe --json | jq '.. | objects | select(.role == "button")'
 
-iosef describe_point --x 200 --y 400     # What's at this coordinate?
-iosef describe_point --x 200 --y 400 --json | jq '.content[0].text'
+iosef describe --x 200 --y 400           # What's at this coordinate?
+iosef describe --x 200 --y 400 --json | jq '.content[0].text'
 
 iosef view                                # Screenshot to temp file (prints path)
 iosef view --output /tmp/screen.png       # Screenshot to specific file
@@ -78,8 +78,8 @@ iosef tap --name "Sign In"                    # Find element + tap (preferred)
 iosef tap --role AXButton --name "Submit"
 iosef tap --name "Menu" --duration 0.5        # Long-press by selector
 
-iosef tap_point --x 200 --y 400              # Tap at coordinates
-iosef tap_point --x 100 --y 300 --duration 0.5 # Long-press at coordinates
+iosef tap --x 200 --y 400                    # Tap at coordinates
+iosef tap --x 100 --y 300 --duration 0.5     # Long-press at coordinates
 
 iosef type --text "Hello World"               # Type into the focused field
 iosef type --name "Search" --text "query"     # Find + tap + type in one step
@@ -148,7 +148,7 @@ Every CLI subcommand is also available as an MCP tool. Configure in your MCP cli
 
 All commands use iOS points. Screenshots are coordinate-aligned: 1 pixel = 1 iOS point.
 
-The accessibility tree reports positions as `(center±half-size)` — the center value is the tap target. For example, an element at `(195±39, 420±22)` has its center at (195, 420) and spans from x=156 to x=234 and y=398 to y=442. Use the center values directly with `tap_point --x 195 --y 420`.
+The accessibility tree reports positions as `(center±half-size)` — the center value is the tap target. For example, an element at `(195±39, 420±22)` has its center at (195, 420) and spans from x=156 to x=234 and y=398 to y=442. Use the center values directly with `tap --x 195 --y 420`.
 
 This means visual agents can tap exactly where they see elements in screenshots, with no coordinate translation layer.
 
@@ -166,7 +166,7 @@ iosef stop                              # Cleans up local session
 
 ```bash
 # Force global even when a local session exists
-iosef --global tap_point --x 200 --y 400
+iosef --global tap --x 200 --y 400
 
 # Force local
 iosef --local status
@@ -255,11 +255,9 @@ State is stored in `~/.iosef/state.json` (global) or `./.iosef/state.json` (loca
 | `status` | | Show simulator and session status |
 | `install_app` | `--app-path <path>` | Install .app or .ipa bundle |
 | `launch_app` | `--bundle-id <id> [--terminate-running]` | Launch app by bundle identifier |
-| `describe_all` | `[--depth N]` | Dump full accessibility tree |
-| `describe_point` | `--x X --y Y` | Get accessibility element at coordinates |
+| `describe` | `[--depth N] [--x X --y Y]` | Describe accessibility tree or element at point |
 | `view` | `[--output <path>] [--type png\|jpeg\|tiff\|bmp\|gif]` | Capture screenshot |
-| `tap` | `[--role R] [--name N] [--identifier I] [--duration S]` | Find element by selector + tap |
-| `tap_point` | `--x X --y Y [--duration S]` | Tap at coordinates (long-press with duration) |
+| `tap` | `[--role R] [--name N] [--identifier I] [--x X --y Y] [--duration S]` | Tap by selector or at coordinates |
 | `type` | `--text <text> [--role R] [--name N] [--identifier I]` | Type text; with selectors: find + tap + type |
 | `swipe` | `--x-start X --y-start Y --x-end X --y-end Y [--delta N] [--duration S]` | Swipe between two points |
 | `find` | `[--role R] [--name N] [--identifier I]` | Find elements by selector |

@@ -356,56 +356,22 @@ func allTools() -> [Tool] {
         ))
     }
 
-    if !isFiltered("describe_all") {
+    if !isFiltered("describe") {
         tools.append(Tool(
-            name: "describe_all",
-            description: "Describes accessibility information for the entire screen in the iOS Simulator. Coordinates are (center±half-size) in iOS points — the center value is the tap target. Use find for targeted queries by role, name, or identifier.",
+            name: "describe",
+            description: "Describe accessibility elements in the iOS Simulator. Two modes: (1) Tree mode (default): dumps the full accessibility tree. Supports optional depth limit. (2) Point mode: pass x and y to get the element at those coordinates. Coordinates are (center±half-size) in iOS points — the center value is the tap target.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "depth": .object(["type": .string("integer"), "description": .string("Maximum tree depth to return (omit for full tree). 0 = root only, 1 = root + direct children, etc.")]),
+                    "depth": .object(["type": .string("integer"), "description": .string("Maximum tree depth to return (omit for full tree). 0 = root only, 1 = root + direct children, etc. Only valid in tree mode (without x/y).")]),
+                    "x": .object(["type": .string("number"), "description": .string("The x-coordinate (point mode). Must be provided with y.")]),
+                    "y": .object(["type": .string("number"), "description": .string("The y-coordinate (point mode). Must be provided with x.")]),
                     "udid": udidSchema,
                 ]),
             ])
         ))
     }
 
-    if !isFiltered("describe_point") {
-        tools.append(Tool(
-            name: "describe_point",
-            description: "Returns the accessibility element at given co-ordinates on the iOS Simulator's screen",
-            inputSchema: .object([
-                "type": .string("object"),
-                "properties": .object([
-                    "x": .object(["type": .string("number"), "description": .string("The x-coordinate")]),
-                    "y": .object(["type": .string("number"), "description": .string("The y-coordinate")]),
-                    "udid": udidSchema,
-                ]),
-                "required": .array([.string("x"), .string("y")]),
-            ])
-        ))
-    }
-
-    if !isFiltered("tap_point") {
-        tools.append(Tool(
-            name: "tap_point",
-            description: "Tap at (x, y) coordinates on the iOS Simulator screen. Use tap (selector-based) when targeting a named/accessible element.",
-            inputSchema: .object([
-                "type": .string("object"),
-                "properties": .object([
-                    "x": .object(["type": .string("number"), "description": .string("The x-coordinate")]),
-                    "y": .object(["type": .string("number"), "description": .string("The y-coordinate")]),
-                    "duration": .object([
-                        "type": .string("string"),
-                        "description": .string("Press duration"),
-                        "pattern": .string(#"^\d+(\.\d+)?$"#),
-                    ]),
-                    "udid": udidSchema,
-                ]),
-                "required": .array([.string("x"), .string("y")]),
-            ])
-        ))
-    }
 
     if !isFiltered("type") {
         var typeProps: [String: Value] = [
@@ -574,6 +540,8 @@ func allTools() -> [Tool] {
 
     if !isFiltered("tap") {
         var tapSchema = selectorSchema
+        tapSchema["x"] = .object(["type": .string("number"), "description": .string("The x-coordinate (coordinate mode). Must be provided with y.")])
+        tapSchema["y"] = .object(["type": .string("number"), "description": .string("The y-coordinate (coordinate mode). Must be provided with x.")])
         tapSchema["duration"] = .object([
             "type": .string("string"),
             "description": .string("Press duration for long-press (in seconds)"),
@@ -581,7 +549,7 @@ func allTools() -> [Tool] {
         ])
         tools.append(Tool(
             name: "tap",
-            description: "Find an accessibility element by selector and tap its center. Combines find + tap_point into one step. Use tap_point for raw coordinate taps.",
+            description: "Tap on the iOS Simulator screen. Two modes: (1) Selector mode: finds an accessibility element by role/name/identifier and taps its center. (2) Coordinate mode: pass x and y to tap at exact coordinates. Provide selectors OR coordinates, not both.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(tapSchema),
@@ -651,12 +619,8 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
         switch params.name {
         case "get_booted_sim_id":
             return try await handleGetBootedSimID()
-        case "describe_all":
-            return try await handleUIDescribeAll(params)
-        case "describe_point":
-            return try await handleUIDescribePoint(params)
-        case "tap_point":
-            return try await handleTapPoint(params)
+        case "describe":
+            return try await handleDescribe(params)
         case "type":
             return try await handleType(params)
         case "swipe":
@@ -698,51 +662,40 @@ func handleGetBootedSimID() async throws -> CallTool.Result {
     return .init(content: [.text("Booted Simulator: \"\(device.name)\". UUID: \"\(device.udid)\"")])
 }
 
-func handleUIDescribeAll(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+func handleDescribe(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let hasX = extractDouble(params.arguments?["x"]) != nil
+    let hasY = extractDouble(params.arguments?["y"]) != nil
+    let hasDepth = params.arguments?["depth"].flatMap({ Int($0, strict: false) }) != nil
+
+    if hasX != hasY {
+        return .init(content: [.text("Both x and y are required for point mode (got only \(hasX ? "x" : "y"))")], isError: true)
+    }
+
+    let hasPoint = hasX && hasY
+
+    if hasPoint && hasDepth {
+        return .init(content: [.text("Cannot combine depth with point coordinates — depth is only for tree mode")], isError: true)
+    }
+
     let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
     let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
-    let depth = params.arguments?["depth"].flatMap({ Int($0, strict: false) })
 
-    let markdown = try await withTimeout("describe_all", .seconds(12)) {
-        let nodes = try axpBridge.accessibilityElements()
-        return TreeSerializer.toMarkdown(nodes, maxDepth: depth)
-    }
-    return .init(content: [.text(markdown)])
-}
-
-func handleUIDescribePoint(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-
-    guard let x = extractDouble(params.arguments?["x"]),
-          let y = extractDouble(params.arguments?["y"]) else {
-        return .init(content: [.text("Missing required parameters: x, y")], isError: true)
-    }
-
-    let axpBridge = try await SimulatorCache.shared.getAXPBridge(udid: udid)
-
-    let markdown = try await withTimeout("describe_point", .seconds(12)) {
-        let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
-        return TreeSerializer.toMarkdown(node)
-    }
-    return .init(content: [.text(markdown)])
-}
-
-func handleTapPoint(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-    guard let x = extractDouble(params.arguments?["x"]),
-          let y = extractDouble(params.arguments?["y"]) else {
-        return .init(content: [.text("Missing required parameters: x, y")], isError: true)
-    }
-
-    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
-    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
-
-    if let duration = extractDouble(params.arguments?["duration"]) {
-        hidClient.longPress(x: x, y: y, duration: duration)
+    if hasPoint {
+        let x = extractDouble(params.arguments?["x"])!
+        let y = extractDouble(params.arguments?["y"])!
+        let markdown = try await withTimeout("describe", .seconds(12)) {
+            let node = try axpBridge.accessibilityElementAtPoint(x: x, y: y)
+            return TreeSerializer.toMarkdown(node)
+        }
+        return .init(content: [.text(markdown)])
     } else {
-        hidClient.tap(x: x, y: y)
+        let depth = params.arguments?["depth"].flatMap({ Int($0, strict: false) })
+        let markdown = try await withTimeout("describe", .seconds(12)) {
+            let nodes = try axpBridge.accessibilityElements()
+            return TreeSerializer.toMarkdown(nodes, maxDepth: depth)
+        }
+        return .init(content: [.text(markdown)])
     }
-
-    return .init(content: [.text("Tapped successfully")])
 }
 
 func handleType(_ params: CallTool.Parameters) async throws -> CallTool.Result {
@@ -902,6 +855,41 @@ func resolveAndTapFirstMatch(from params: CallTool.Parameters) async throws -> (
 }
 
 func handleTap(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let hasSelector = params.arguments?["role"]?.stringValue != nil
+        || params.arguments?["name"]?.stringValue != nil
+        || params.arguments?["identifier"]?.stringValue != nil
+    let hasX = extractDouble(params.arguments?["x"]) != nil
+    let hasY = extractDouble(params.arguments?["y"]) != nil
+
+    if hasX != hasY {
+        return .init(content: [.text("Both x and y are required for coordinate mode (got only \(hasX ? "x" : "y"))")], isError: true)
+    }
+
+    let hasPoint = hasX && hasY
+
+    if hasSelector && hasPoint {
+        return .init(content: [.text("Cannot combine selectors (role/name/identifier) with coordinates (x/y) — use one mode or the other")], isError: true)
+    }
+
+    if !hasSelector && !hasPoint {
+        return .init(content: [.text("Provide either selectors (role/name/identifier) or coordinates (x/y)")], isError: true)
+    }
+
+    if hasPoint {
+        let x = extractDouble(params.arguments?["x"])!
+        let y = extractDouble(params.arguments?["y"])!
+        let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+        let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+
+        if let duration = extractDouble(params.arguments?["duration"]) {
+            hidClient.longPress(x: x, y: y, duration: duration)
+        } else {
+            hidClient.tap(x: x, y: y)
+        }
+
+        return .init(content: [.text("Tapped successfully")])
+    }
+
     let (center, hidClient) = try await resolveAndTapFirstMatch(from: params)
 
     if let duration = extractDouble(params.arguments?["duration"]) {
@@ -1281,8 +1269,8 @@ struct SimulatorCLI: AsyncParsableCommand {
               iosef exists --role AXButton --name "Submit"
 
             Example — coordinate-based (when elements lack labels):
-              iosef describe_all
-              iosef tap_point --x 195 --y 420
+              iosef describe
+              iosef tap --x 195 --y 420
               iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 
               See 'iosef help <subcommand>' for detailed help.
@@ -1304,13 +1292,11 @@ struct SimulatorCLI: AsyncParsableCommand {
                 LaunchApp.self,
             ]),
             CommandGroup(name: "Inspection:", subcommands: [
-                UIDescribeAll.self,
-                UIDescribePoint.self,
+                Describe.self,
                 UIView.self,
             ]),
             CommandGroup(name: "Interaction:", subcommands: [
                 Tap.self,
-                TapPoint.self,
                 Type.self,
                 UISwipe.self,
             ]),
@@ -1663,111 +1649,61 @@ struct Status: AsyncParsableCommand {
     }
 }
 
-struct UIDescribeAll: AsyncParsableCommand {
+struct Describe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "describe_all",
-        abstract: "Dump the full accessibility tree.",
+        commandName: "describe",
+        abstract: "Describe accessibility elements (full tree or at a point).",
         discussion: """
-            Returns an indented text tree of every accessibility element on screen, \
-            including roles, labels, frames, and values. Use this to discover element \
-            positions for tap, or to understand the current UI state.
+            Two modes:
 
-            Tip: use find for targeted queries instead of scanning the full tree.
+            Tree mode (default): dumps the full accessibility tree. Use --depth to limit \
+            depth (0 = root only). Use --json for machine-readable output.
+
+            Point mode: pass --x and --y to get the element at those coordinates.
 
             Coordinates are (center±half-size) in iOS points — the center value is the tap target.
 
-            Use --depth to limit tree depth (0 = root only). Use --json for machine-readable \
-            output. Combine with jq to filter:
-
             Examples:
-              iosef describe_all
-              iosef describe_all --depth 2
-              iosef describe_all --json
-              iosef describe_all --json | jq '.. | objects | select(.role == "button")'
+              iosef describe
+              iosef describe --depth 2
+              iosef describe --json | jq '.. | objects | select(.role == "button")'
+              iosef describe --x 200 --y 400
+              iosef describe --x 200 --y 400 --json
             """
     )
 
     @OptionGroup var common: CommonOptions
 
-    @Option(name: .long, help: "Maximum tree depth (omit for full tree)")
+    @Option(name: .long, help: "Maximum tree depth (omit for full tree, tree mode only)")
     var depth: Int?
+
+    @Option(name: .long, help: "The x-coordinate (point mode)")
+    var x: Double?
+
+    @Option(name: .long, help: "The y-coordinate (point mode)")
+    var y: Double?
+
+    func validate() throws {
+        let hasX = x != nil
+        let hasY = y != nil
+        if hasX != hasY {
+            throw ValidationError("Both --x and --y are required for point mode (got only \(hasX ? "--x" : "--y"))")
+        }
+        if hasX && hasY && depth != nil {
+            throw ValidationError("Cannot combine --depth with --x/--y — depth is only for tree mode")
+        }
+    }
 
     func run() async throws {
         var args: [String: Value] = [:]
         common.addDevice(to: &args)
         if let depth { args["depth"] = .int(depth) }
-        try await runToolCLI(toolName: "describe_all", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+        if let x { args["x"] = .double(x) }
+        if let y { args["y"] = .double(y) }
+        try await runToolCLI(toolName: "describe", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 
-struct UIDescribePoint: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "describe_point",
-        abstract: "Get the accessibility element at (x, y).",
-        discussion: """
-            Returns the accessibility element at the given coordinates. Useful for \
-            identifying what's at a specific point on screen.
-
-            Coordinates are (center±half-size) in iOS points — the center value is the tap target.
-
-            Examples:
-              iosef describe_point --x 200 --y 400
-              iosef describe_point --x 200 --y 400 --json
-              iosef describe_point --x 200 --y 400 --json | jq '.content[0].text'
-            """
-    )
-
-    @OptionGroup var common: CommonOptions
-
-    @Option(name: .long, help: "The x-coordinate")
-    var x: Double
-
-    @Option(name: .long, help: "The y-coordinate")
-    var y: Double
-
-    func run() async throws {
-        var args: [String: Value] = ["x": .double(x), "y": .double(y)]
-        common.addDevice(to: &args)
-        try await runToolCLI(toolName: "describe_point", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
-    }
-}
-
-struct TapPoint: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "tap_point",
-        abstract: "Tap at (x, y) coordinates on the iOS Simulator screen.",
-        discussion: """
-            Sends a HID touch event directly to the simulator (no simctl overhead). \
-            Coordinates are in iOS points. Use describe_all to find element positions.
-
-            Tip: prefer tap (selector-based) when targeting a named element.
-
-            For long-press, pass --duration (in seconds).
-
-            Examples:
-              iosef tap_point --x 200 --y 400
-              iosef tap_point --x 100 --y 300 --duration 0.5
-            """
-    )
-
-    @OptionGroup var common: CommonOptions
-
-    @Option(name: .long, help: "The x-coordinate")
-    var x: Double
-
-    @Option(name: .long, help: "The y-coordinate")
-    var y: Double
-
-    @Option(name: .long, help: "Press duration in seconds")
-    var duration: Double?
-
-    func run() async throws {
-        var args: [String: Value] = ["x": .double(x), "y": .double(y)]
-        if let duration { args["duration"] = .double(duration) }
-        common.addDevice(to: &args)
-        try await runToolCLI(toolName: "tap_point", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
-    }
-}
 
 struct Type: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -1861,7 +1797,7 @@ struct UIView: AsyncParsableCommand {
 
             In MCP mode, returns base64 image data unless output_path is provided.
 
-            The screenshot is coordinate-aligned with tap and describe_all — \
+            The screenshot is coordinate-aligned with tap and describe — \
             pixels correspond to iOS points.
 
             Examples:
@@ -2046,29 +1982,60 @@ struct Text: AsyncParsableCommand {
 struct Tap: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tap",
-        abstract: "Find an element by selector and tap it.",
+        abstract: "Tap by selector or at (x, y) coordinates.",
         discussion: """
-            Searches the accessibility tree for the first matching element and taps \
-            its center. Combines find + tap_point into one step. Errors if no match.
+            Two modes:
 
-            For long-press, pass --duration (in seconds). \
-            For coordinate-based taps, use tap_point instead.
+            Selector mode: searches the accessibility tree for the first matching element \
+            and taps its center. Use --role, --name, --identifier.
+
+            Coordinate mode: pass --x and --y to tap at exact coordinates. \
+            Coordinates are in iOS points. Use describe to find element positions.
+
+            Provide selectors OR coordinates, not both. \
+            For long-press, pass --duration (in seconds).
 
             Examples:
               iosef tap --name "Sign In"
               iosef tap --role AXButton --name "Submit"
               iosef tap --name "Menu" --duration 0.5
+              iosef tap --x 200 --y 400
+              iosef tap --x 100 --y 300 --duration 0.5
             """
     )
 
     @OptionGroup var common: CommonOptions
     @OptionGroup var selector: SelectorOptions
 
+    @Option(name: .long, help: "The x-coordinate (coordinate mode)")
+    var x: Double?
+
+    @Option(name: .long, help: "The y-coordinate (coordinate mode)")
+    var y: Double?
+
     @Option(name: .long, help: "Press duration in seconds (for long-press)")
     var duration: Double?
 
+    func validate() throws {
+        let hasSelector = selector.role != nil || selector.name != nil || selector.identifier != nil
+        let hasX = x != nil
+        let hasY = y != nil
+        if hasX != hasY {
+            throw ValidationError("Both --x and --y are required for coordinate mode (got only \(hasX ? "--x" : "--y"))")
+        }
+        let hasPoint = hasX && hasY
+        if hasSelector && hasPoint {
+            throw ValidationError("Cannot combine selectors (--role/--name/--identifier) with coordinates (--x/--y)")
+        }
+        if !hasSelector && !hasPoint {
+            throw ValidationError("Provide either selectors (--role/--name/--identifier) or coordinates (--x/--y)")
+        }
+    }
+
     func run() async throws {
         var args = selector.toArguments()
+        if let x { args["x"] = .double(x) }
+        if let y { args["y"] = .double(y) }
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
         try await runToolCLI(toolName: "tap", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)

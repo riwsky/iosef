@@ -48,7 +48,7 @@ public enum ScreenCapture {
     /// Captures the simulator screen as a JPEG and returns base64-encoded data.
     /// Uses direct IOSurface access for speed (~3ms vs ~200ms simctl), falling back
     /// to simctl pipe if IOSurface is unavailable. Downscales to iOS point dimensions
-    /// so coordinates align with `ui_tap` and `ui_describe_all`.
+    /// so coordinates align with `tap` and `describe`.
     public static func captureSimulator(udid: String, screenScale: Float, timeout: Duration = .seconds(5)) throws -> (base64: String, width: Int, height: Int) {
         let t0 = CFAbsoluteTimeGetCurrent()
 

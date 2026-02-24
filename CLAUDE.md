@@ -18,7 +18,7 @@ An attempt at a swift port of joshuayoes/ios-simulator-mcp, with a few goals:
 
 *Multiple simulators:* Multiple simulators are often booted. The test app targets a simulator named after the repo dir (`ios-simulator-mcp-swift`). Use `iosef start --local --device "ios-simulator-mcp-swift"` to create a project config, then subsequent commands auto-detect. Or pass `--device` explicitly — it accepts either a simulator name or UDID. `--udid` still works as an alias. Add `--local`/`--global` to any command to force which config directory is used.
 
-*Selector commands:* `find`, `exists`, `count`, `text`, `tap`, `type` (with selectors), `wait` — search/interact by `--role`, `--name`, `--identifier`. `describe_all --depth N` limits tree depth. These compose with AND logic.
+*Selector commands:* `find`, `exists`, `count`, `text`, `tap`, `type` (with selectors), `wait` — search/interact by `--role`, `--name`, `--identifier`. `describe --depth N` limits tree depth. These compose with AND logic. `tap` and `describe` also support coordinate mode (`--x`/`--y`).
 
 *Demos:* Use `showboat` to create executable demo documents in `demos/`. Build incrementally with `showboat init`, `note`, `exec`, `image`. Verify with `showboat verify`. See existing demos for format. Always `showboat verify` before considering a demo complete.
 

@@ -21,7 +21,7 @@ This creates `.ios-simulator-mcp/config.json` in the current directory, boots th
 
 1. Start the simulator: `iosef start --local --device "<name>"` (first time)
 2. Build and launch the app (project-specific — check CLAUDE.md)
-3. Interact — prefer selector commands (`tap`, `type` with selectors, `exists`, `wait`) over coordinate-based (`tap_point`, `swipe`). Use `describe_all` when you need to survey the full screen or elements lack stable labels.
+3. Interact — prefer selector commands (`tap` with selectors, `type` with selectors, `exists`, `wait`) over coordinate-based (`tap --x/--y`, `swipe`). Use `describe` when you need to survey the full screen or elements lack stable labels.
 4. Take a screenshot: `iosef view` (saves to `.ios-simulator-mcp/cache/`; use `--output /path/to/file.png` for a specific path)
 5. Screenshot again after each action to verify result
 
@@ -31,14 +31,14 @@ All commands use named arguments. Tool names have no `ui_` prefix. Run `iosef <s
 
 ### Selector Commands (preferred)
 
-Use selector commands for 1-step interactions instead of describe_all → parse → tap_point:
+Use selector commands for 1-step interactions instead of describe → parse → tap --x/--y:
 
 ```bash
-# Tap by selector (replaces describe_all → parse → tap_point)
+# Tap by selector (1 step instead of describe → parse → tap --x/--y)
 iosef tap --name "Sign In"
 iosef tap --name "Menu" --duration 0.5  # long press
 
-# Focus + type in one step (replaces tap_point → sleep → type)
+# Focus + type in one step (replaces tap --x/--y → sleep → type)
 iosef type --role AXTextField --text "hello"
 iosef type --name "Search" --text "query"
 
@@ -60,13 +60,13 @@ iosef wait --name "Success" --timeout 5
 
 ```bash
 # AX tree — use when elements lack labels or you need to survey the full screen
-iosef describe_all
-iosef describe_all --depth 2    # limit tree depth
-iosef describe_point --x 200 --y 400
+iosef describe
+iosef describe --depth 2    # limit tree depth
+iosef describe --x 200 --y 400
 
 # Tap at coordinates
-iosef tap_point --x 201 --y 740
-iosef tap_point --x 201 --y 740 --duration 1.0   # long press
+iosef tap --x 201 --y 740
+iosef tap --x 201 --y 740 --duration 1.0   # long press
 
 # Swipe / scroll
 iosef swipe --x-start 200 --y-start 300 --x-end 200 --y-end 700 --duration 0.3
@@ -79,14 +79,14 @@ iosef view
 iosef view --output /tmp/sim.png  # explicit path
 
 # Chain for rapid repeated actions
-iosef tap_point --x 201 --y 740 && sleep 0.3 && iosef tap_point --x 201 --y 740
+iosef tap --x 201 --y 740 && sleep 0.3 && iosef tap --x 201 --y 740
 ```
 
 **Screenshot fallback**: If `view` fails with a Screen Recording error, use the MCP `view` tool instead.
 
 ## Reading the AX Tree
 
-Always `describe_all` before interacting. The format is:
+Always `describe` before interacting. The format is:
 
 ```
 AXButton "Label" (center_x±half_width, center_y±half_height)
@@ -135,7 +135,7 @@ iosef swipe \
 
 ### Ensuring drag handles are targetable
 
-UIKit `UIImageView` drag handles are often hidden from accessibility. Add labels so they appear in `describe_all`:
+UIKit `UIImageView` drag handles are often hidden from accessibility. Add labels so they appear in `describe`:
 
 ```swift
 dragHandle.isAccessibilityElement = true
@@ -169,7 +169,7 @@ showboat verify demos/my-feature-demo.md  # must pass before done
 
 ## Tips
 
-- **Blank AX tree?** If `describe_all` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
+- **Blank AX tree?** If `describe` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
 - **Selector commands first**: Use `tap`/`type` (with selectors)/`exists` when elements have stable names. Fall back to coordinates for unlabeled elements and swipe gestures.
 - **AX tree first**: Never guess coordinates. Always read the tree.
 - **Screenshot after every action**: Confirm the UI state changed as expected.
