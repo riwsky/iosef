@@ -93,7 +93,7 @@ def build_wheel(binary: Path, version: str, output_dir: Path) -> Path:
         "Metadata-Version: 2.1\n"
         f"Name: iosef\n"
         f"Version: {version}\n"
-        "Summary: Fast, native MCP server and CLI for iOS Simulator automation\n"
+        "Summary: CLI and MCP server for iOS Simulator automation, designed for agents\n"
         "Home-page: https://github.com/riwsky/iosef\n"
         "Author: Will Cybriwsky\n"
         "License: MIT\n"
