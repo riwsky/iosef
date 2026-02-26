@@ -6,7 +6,7 @@ A Swift CLI and [MCP server](https://modelcontextprotocol.io/) for interacting w
 
 ```
 iosef start --local --device "X"   →  creates/boots simulator, saves state to .iosef/state.json
-iosef tap / type / view             →  reads state.json, performs action, exits
+iosef tap / type / view            →  reads state.json, performs action, exits
 iosef mcp                          →  long-running MCP server (stdio), same capabilities
 iosef stop                         →  shuts down simulator, deletes device, cleans up state
 ```
