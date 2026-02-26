@@ -424,18 +424,18 @@ struct Start: AsyncParsableCommand {
         if let name = deviceName {
             var device = try SimCtlClient.findDeviceByName(name)
             if device == nil {
-                // Create the simulator
-                let resolvedType: String
-                if let deviceType {
-                    resolvedType = deviceType
-                } else {
-                    resolvedType = try await SimCtlClient.getLatestDeviceType()
-                }
+                // Create the simulator — resolve runtime first so we can pick a compatible device type
                 let resolvedRuntime: String
                 if let runtime {
                     resolvedRuntime = runtime
                 } else {
                     resolvedRuntime = try await SimCtlClient.getLatestRuntime()
+                }
+                let resolvedType: String
+                if let deviceType {
+                    resolvedType = deviceType
+                } else {
+                    resolvedType = try await SimCtlClient.getLatestDeviceType(forRuntime: resolvedRuntime)
                 }
                 let udid = try await SimCtlClient.createSimulator(name: name, deviceType: resolvedType, runtime: resolvedRuntime)
                 print("Created simulator \"\(name)\" (\(resolvedType), \(resolvedRuntime))")

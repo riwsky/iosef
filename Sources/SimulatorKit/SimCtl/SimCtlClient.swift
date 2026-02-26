@@ -169,20 +169,24 @@ public enum SimCtlClient {
 
     // MARK: - Simulator creation/deletion via simctl
 
-    /// Returns the identifier of the latest iPhone device type (e.g. `com.apple.CoreSimulator.SimDeviceType.iPhone-16`).
-    public static func getLatestDeviceType() async throws -> String {
-        let result = try await run("/usr/bin/xcrun", arguments: ["simctl", "list", "devicetypes", "-j"])
+    /// Returns the identifier of the latest iPhone device type compatible with the given runtime.
+    /// Uses the runtime's `supportedDeviceTypes` list (newest-first) filtered by `productFamily == "iPhone"`.
+    public static func getLatestDeviceType(forRuntime runtimeIdentifier: String) async throws -> String {
+        let result = try await run("/usr/bin/xcrun", arguments: ["simctl", "list", "runtimes", "-j"])
         guard let data = result.stdout.data(using: .utf8) else {
-            throw SimCtlError.parseError("Failed to parse devicetypes JSON")
+            throw SimCtlError.parseError("Failed to parse runtimes JSON")
         }
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let deviceTypes = json?["devicetypes"] as? [[String: Any]] else {
-            throw SimCtlError.parseError("Missing 'devicetypes' key in simctl output")
+        guard let runtimes = json?["runtimes"] as? [[String: Any]] else {
+            throw SimCtlError.parseError("Missing 'runtimes' key in simctl output")
         }
-        // Find the last iPhone device type
-        guard let last = deviceTypes.last(where: { ($0["identifier"] as? String)?.contains("iPhone") == true }),
-              let identifier = last["identifier"] as? String else {
-            throw SimCtlError.parseError("No iPhone device type found")
+        guard let runtime = runtimes.first(where: { ($0["identifier"] as? String) == runtimeIdentifier }),
+              let supportedDeviceTypes = runtime["supportedDeviceTypes"] as? [[String: Any]] else {
+            throw SimCtlError.parseError("Runtime '\(runtimeIdentifier)' not found or has no supportedDeviceTypes")
+        }
+        guard let first = supportedDeviceTypes.first(where: { ($0["productFamily"] as? String) == "iPhone" }),
+              let identifier = first["identifier"] as? String else {
+            throw SimCtlError.parseError("No compatible iPhone device type found for runtime '\(runtimeIdentifier)'")
         }
         return identifier
     }
