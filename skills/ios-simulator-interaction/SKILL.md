@@ -1,94 +1,32 @@
 ---
 name: ios-simulator-interaction
-description: Use when building, testing, or verifying SwiftUI/UIKit changes on the iOS Simulator — tapping buttons, reading accessibility trees, testing drag-reorder, swipe-to-delete, scrolling, and general UI interaction. Invoke this skill whenever CLAUDE.md says to use the simulator for validation.
+description: Interaction with the iOS simulator using iosef, a CLI optimized for agent usage. Use when building or testing changes on the iOS Simulator — viewing the screen, tapping buttons, reading accessibility trees, testing drag-reorder, swipe-to-delete, or scrolling.
 ---
 
 # iOS Simulator Interaction
 
-Use `iosef` (via Bash) as the primary tool for all simulator interactions.
+Use `iosef` (via Bash) as the primary tool for all iOS simulator interactions. Compared to `idb` and `simctl`, it makes your life easier by:
+* allowing you to interact (tap, input, etc) by AXtree selectors instead of only by bare coordinates
+* scaling screenshots so their coordinate space matches the tool coordinates
+* inferring which simulator to used based on VCS root, or explicit session establishment (see `iosef start --help` or `iosef connect --help`)
 
-## Project Setup
+Always run `iosef --help` at least once, to get a sense of how it works. You can also pass `--help` to subcommands for details on their arguments.
 
-Set up a project config directory so subsequent commands auto-detect the target simulator:
+Local session state is kept in `.iosef` in the current directory, so ensure that's in `.gitignore` to keep it out of version control history.
 
-```bash
-iosef start --local --device "my-sim-name"
-```
 
-This creates `.iosef/state.json` in the current directory, boots the simulator, and opens Simulator.app. Without `--local`, config goes to `~/.iosef/` (global).
+## Recommendations when using iosef
 
-Add `.iosef/` to your `.gitignore` to keep session state out of version control. The CLI warns on `start` and `connect` if it's missing.
-
-## Build-Test Loop
-
-1. Start the simulator: `iosef start --local --device "<name>"` (first time)
-2. Build and launch the app (project-specific — check CLAUDE.md)
-3. Interact — prefer selector commands (`tap`, `type` with selectors, `exists`, `wait`) over coordinate-based (`tap_point`, `swipe`). Use `describe_all` when you need to survey the full screen or elements lack stable labels.
-4. Take a screenshot: `iosef view` (saves to `.iosef/cache/`; use `--output /path/to/file.png` for a specific path)
-5. Screenshot again after each action to verify result
-
-## CLI Reference
-
-All commands use named arguments. Tool names have no `ui_` prefix. Run `iosef <subcommand> --help` for full details.
-
-### Selector Commands (preferred)
-
-Use selector commands for 1-step interactions instead of describe_all → parse → tap_point:
-
-```bash
-# Tap by selector (replaces describe_all → parse → tap_point)
-iosef tap --name "Sign In"
-iosef tap --name "Menu" --duration 0.5  # long press
-
-# Focus + type in one step (replaces tap_point → sleep → type)
-iosef type --role AXTextField --text "hello"
-iosef type --name "Search" --text "query"
-
-# Find elements by role/name/identifier (AND logic)
-iosef find --role AXButton --name "Submit"
-
-# Quick queries
-iosef exists --name "Error"          # "true" / "false"
-iosef count --role AXButton           # "48"
-iosef text --name "Score"             # extract text content
-
-# Wait for UI state
-iosef wait --name "Success" --timeout 5
-```
-
-**Prefer selector commands** when the element has a stable name or role. Fall back to coordinate-based commands for elements without useful labels or for swipe gestures.
-
-### Coordinate-Based Commands
-
-```bash
-# AX tree — use when elements lack labels or you need to survey the full screen
-iosef describe_all
-iosef describe_all --depth 2    # limit tree depth
-iosef describe_point --x 200 --y 400
-
-# Tap at coordinates
-iosef tap_point --x 201 --y 740
-iosef tap_point --x 201 --y 740 --duration 1.0   # long press
-
-# Swipe / scroll
-iosef swipe --x-start 200 --y-start 300 --x-end 200 --y-end 700 --duration 0.3
-
-# Type text (requires a field to already have focus)
-iosef type --text "hello"
-
-# Screenshot (saves to .iosef/cache/ by default)
-iosef view
-iosef view --output /tmp/sim.png  # explicit path
-
-# Chain for rapid repeated actions
-iosef tap_point --x 201 --y 740 && sleep 0.3 && iosef tap_point --x 201 --y 740
-```
-
-**Screenshot fallback**: If `view` fails with a Screen Recording error, use the MCP `view` tool instead.
+* Make use of --local sessions with `iosef start`/`connect` to avoid accidentally interfering with simulators being used by other agents on the system.
+* `iosef describe`, with no arguments, will give you the accessibility tree - a much more compact starting point than screenshots
+* Prefer selector-based targeting to coordinate-based targeting, as selectors are more robust (to e.g. scroll position) and don't require you to recheck the accessibility tree on reuse.
+* Remember that you can chain multiple commands together using your bash tools, to save yourself some round trips.
+* Prefer `iosef view` to other screenshot methods like `simctl` or `idb`, since it lines up the coordinate spaces for you.
+* For even more complicated chaining, consider writing small scripts that parse `--json` output.
 
 ## Reading the AX Tree
 
-Always `describe_all` before interacting. The format is:
+Always `iosef describe` at the start of your usage. The format is:
 
 ```
 AXButton "Label" (center_x±half_width, center_y±half_height)
@@ -96,23 +34,7 @@ AXButton "Label" (center_x±half_width, center_y±half_height)
 
 The **center values are the tap targets**. Example: `AXButton "Start" (197±160, 270±22)` → tap at (197, 270).
 
-## Gestures
-
-### Scroll
-
-```bash
-# Vertical scroll (short duration = scroll with momentum)
-iosef swipe --x-start 200 --y-start 500 --x-end 200 --y-end 200 --duration 0.3
-
-# Horizontal scroll
-iosef swipe --x-start 300 --y-start 400 --x-end 100 --y-end 400 --duration 0.3
-```
-
-### Swipe-to-delete
-
-```bash
-iosef swipe --x-start 300 --y-start $ROW_Y --x-end 100 --y-end $ROW_Y --duration 0.3
-```
+## Advanced Gestures
 
 ### Drag-reorder (UITableView / UICollectionView)
 
@@ -137,7 +59,7 @@ iosef swipe \
 
 ### Ensuring drag handles are targetable
 
-UIKit `UIImageView` drag handles are often hidden from accessibility. Add labels so they appear in `describe_all`:
+UIKit `UIImageView` drag handles are often hidden from accessibility. Add labels so they appear in `describe`:
 
 ```swift
 dragHandle.isAccessibilityElement = true
@@ -160,9 +82,14 @@ For worktree-based workflows where each worktree gets its own simulator, conside
 
 ## Proof of Work
 
-After verifying a feature works, capture it as a showboat demo:
+If a user request a demo or walkthrough, consider using [simonw/showboat](https://github.com/simonw/showboat). If users don't already have it installed, you can run it without installing it first by using `uvx showboat --help`.
 
-**Critical: demos must be self-contained.** `showboat verify` replays every `exec` block from scratch. If a demo depends on app state (e.g. tasks in a queue), the demo must set that state up itself — typically by rebuilding the app and adding test data via simulator interactions. A demo that only captures the "interesting part" will fail verify.
+General usage of `showboat` is better understood via it's own documentation, but some `iosef`-specific tips include:
+
+* remember to include the session start and stop portions in the showboat script - they're designed to be replayed, so they shouldn't assume a certain simulator already exists
+* also ensure the showboat script includes whatever's needed to set up expected app state
+* use the selector-based interaction forms, as they're more robust. If demoing something that is naturally coordinate-based, like scrolling, consider chaining `iosef describe --json` to grab coordinates at showboat replay time instead of baking in the coordinates at creation time.
+
 
 ```bash
 showboat init demos/my-feature-demo.md "Feature Name Demo"
@@ -181,12 +108,8 @@ showboat verify demos/my-feature-demo.md  # must pass before done
 
 **Timing**: Use `wait` commands (`iosef wait --name 'Expected' --timeout 5`) instead of fixed `sleep` for state that depends on async operations (e.g. WatchConnectivity sync). Fixed sleeps are flaky; `wait` is deterministic.
 
-## Tips
+## Troubleshooting
 
-- **Blank AX tree?** If `describe_all` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
-- **Selector commands first**: Use `tap`/`type` (with selectors)/`exists` when elements have stable names. Fall back to coordinates for unlabeled elements and swipe gestures.
-- **AX tree first**: Never guess coordinates. Always read the tree.
-- **Screenshot after every action**: Confirm the UI state changed as expected.
-- **Identify elements by label**: If an element isn't in the AX tree, it lacks accessibility markup. Add `isAccessibilityElement` + `accessibilityLabel` and rebuild.
-- **Gesture cheat sheet**: Short duration (0.2–0.5s) = scroll/swipe. Long duration (6–8s) + delta=1 = drag-reorder. `tap` with duration = long press (not drag).
-- **Chain CLI calls**: Use `&&` to chain rapid sequential taps. Add `sleep 0.3` between if needed for animation settling.
+- **Blank AX tree?** If `describe` returns only `AXApplication (0±0, 0±0)`, the simulator process is probably broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
+- **Code doesn't have accessibility labels?**: Add them - it'd improve the UX for more than just yourself. Let the user know if/when you do this.
+- **Not seeing elements and labels expected in the AXTree?** Some container elements like `AXGroup`s don't naturally show up in the top level describe calls - an issue that also afflicts `idb`, and is seemingly a bug in Apple's frameworks. Sometimes this can be resolved by doing a point-wise describe on the coordinates of the container, but you might need to fall back to screenshots.
