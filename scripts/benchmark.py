@@ -22,33 +22,33 @@ RESULTS_DIR = Path("/tmp/ios-sim-mcp-bench")
 BASELINE_WORKSPACE_DIR = Path("/tmp/ios-sim-mcp-bench-baseline")
 BASELINE_WORKSPACE_NAME = "bench-baseline"
 
-# MCP-level benchmark tools: (tool_name, extra_params_or_None)
-TOOLS: list[tuple[str, dict | None]] = [
-    ("get_booted_sim_id", None),
-    ("describe_all", None),
-    ("describe_point", {"x": 165, "y": 269}),
-    ("tap_point", {"x": 165, "y": 269}),
-    ("view", None),
+# MCP-level benchmark tools: (display_name, mcp_tool_name, extra_params_or_None)
+TOOLS: list[tuple[str, str, dict | None]] = [
+    ("get_booted_sim_id", "get_booted_sim_id", None),
+    ("describe", "describe", None),
+    ("describe_xy", "describe", {"x": 165, "y": 269}),
+    ("tap", "tap", {"x": 165, "y": 269}),
+    ("view", "view", None),
 ]
 
 # CLI-level benchmark tools: (display_name, swift_cli_template, baseline_template, baseline_label)
 # Templates use {udid}, {swift_bin}, {idb} placeholders.
 CLI_TOOLS: list[tuple[str, str, str, str]] = [
     (
-        "describe_all",
-        "{swift_bin} describe_all --udid {udid}",
+        "describe",
+        "{swift_bin} describe --udid {udid}",
         "{idb} ui describe-all --udid {udid} --json",
         "idb",
     ),
     (
-        "describe_point",
-        "{swift_bin} describe_point --x 165 --y 269 --udid {udid}",
+        "describe_xy",
+        "{swift_bin} describe --x 165 --y 269 --udid {udid}",
         "{idb} ui describe-point --udid {udid} --json -- 165 269",
         "idb",
     ),
     (
-        "tap_point",
-        "{swift_bin} tap_point --x 165 --y 269 --udid {udid}",
+        "tap",
+        "{swift_bin} tap --x 165 --y 269 --udid {udid}",
         "{idb} ui tap --udid {udid} --json -- 165 269",
         "idb",
     ),
@@ -245,7 +245,7 @@ def cli_smoke_test(swift_bin: str, idb: str, udid: str) -> None:
     """Quick smoke test for both Swift CLI and idb."""
     info("Smoke testing Swift CLI...")
     try:
-        r = run(f"{swift_bin} tap_point --x 0 --y 0 --udid {udid}", timeout=10)
+        r = run(f"{swift_bin} tap --x 0 --y 0 --udid {udid}", timeout=10)
         if r.returncode != 0:
             error(f"Swift CLI smoke test failed: {r.stderr.strip()}")
             sys.exit(1)
@@ -290,7 +290,8 @@ def mcp_call_cmd(tool: str, params: dict | None, udid: str, server_cmd: str) -> 
 
 
 def bench(
-    tool: str,
+    display_name: str,
+    mcp_tool: str,
     params: dict | None,
     udid: str,
     swift_cmd: str,
@@ -301,10 +302,10 @@ def bench(
     baseline_swift_cmd: str | None = None,
     baseline_label: str | None = None,
 ) -> None:
-    info(f"Benchmarking: {tool}")
+    info(f"Benchmarking: {display_name}")
 
-    swift_full = mcp_call_cmd(tool, params, udid, swift_cmd)
-    node_full = mcp_call_cmd(tool, params, udid, node_cmd)
+    swift_full = mcp_call_cmd(mcp_tool, params, udid, swift_cmd)
+    node_full = mcp_call_cmd(mcp_tool, params, udid, node_cmd)
 
     # Pre-check if node MCP command works; if not, skip it
     node_ok = subprocess.run(node_full, shell=True, capture_output=True, timeout=10).returncode == 0
@@ -316,23 +317,23 @@ def bench(
         "--warmup", str(warmup),
         "--min-runs", str(min_runs),
         "--reference", swift_full,
-        "--reference-name", f"{current_name}: {tool}",
+        "--reference-name", f"{current_name}: {display_name}",
     ]
 
     if baseline_swift_cmd:
-        baseline_full = mcp_call_cmd(tool, params, udid, baseline_swift_cmd)
+        baseline_full = mcp_call_cmd(mcp_tool, params, udid, baseline_swift_cmd)
         hyperfine_cmd += [
-            "--command-name", f"swift ({baseline_label}): {tool}", baseline_full,
+            "--command-name", f"swift ({baseline_label}): {display_name}", baseline_full,
         ]
 
     if node_ok:
-        hyperfine_cmd += ["--command-name", f"node: {tool}", node_full]
+        hyperfine_cmd += ["--command-name", f"node: {display_name}", node_full]
     else:
-        warn(f"node MCP command failed for '{tool}', benchmarking without node baseline")
+        warn(f"node MCP command failed for '{display_name}', benchmarking without node baseline")
 
     hyperfine_cmd += [
-        "--export-json", str(RESULTS_DIR / f"{tool}.json"),
-        "--export-markdown", str(RESULTS_DIR / f"{tool}.md"),
+        "--export-json", str(RESULTS_DIR / f"{display_name}.json"),
+        "--export-markdown", str(RESULTS_DIR / f"{display_name}.md"),
     ]
 
     subprocess.run(hyperfine_cmd, check=True)
@@ -515,7 +516,7 @@ def generate_summary(
 @click.option(
     "--mode",
     type=click.Choice(["mcp", "cli", "all"]),
-    default="cli",
+    default="all",
     show_default=True,
     help="Benchmark mode: mcp (Swift vs Node MCP), cli (Swift CLI vs idb), or all.",
 )
@@ -621,13 +622,13 @@ def main(
             bench_tools = TOOLS
             if tools:
                 tool_set = set(tools)
-                bench_tools = [(t, p) for t, p in TOOLS if t in tool_set]
+                bench_tools = [(d, t, p) for d, t, p in TOOLS if d in tool_set]
                 if not bench_tools:
-                    error(f"No matching MCP tools. Available: {', '.join(t for t, _ in TOOLS)}")
+                    error(f"No matching MCP tools. Available: {', '.join(d for d, _, _ in TOOLS)}")
                     sys.exit(1)
-            for tool, params in bench_tools:
+            for display_name, mcp_tool, params in bench_tools:
                 bench(
-                    tool, params, udid, swift_mcp_cmd, node_server, warmup, min_runs,
+                    display_name, mcp_tool, params, udid, swift_mcp_cmd, node_server, warmup, min_runs,
                     baseline_swift_cmd=f"{baseline_bin} mcp" if baseline_bin else None,
                     baseline_label=baseline_label,
                 )
