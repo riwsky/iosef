@@ -25,9 +25,11 @@ PLATFORM="${1:-both}"
 SIM_NAME="$(jj root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT_DIR")"
 SIM_NAME="$(basename "$SIM_NAME")"
 
-# Quiet on success, verbose on failure
-LOG=$(mktemp)
-trap 'rm -f "$LOG"' EXIT
+# Quiet on success, verbose on failure — log persists for agent inspection
+LOG_DIR="/tmp/iosef"
+LOG="$LOG_DIR/build-test-app.log"
+mkdir -p "$LOG_DIR"
+echo "# build-test-app.sh — $(date -Iseconds)" > "$LOG"
 
 quiet() {
     if ! "$@" >> "$LOG" 2>&1; then
