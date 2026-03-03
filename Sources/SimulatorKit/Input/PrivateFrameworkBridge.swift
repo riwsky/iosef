@@ -308,15 +308,20 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     }
 
     /// Launches an app on the given SimDevice by bundle identifier.
-    /// Calls -[SimDevice launchApplicationAsyncWithID:options:completionQueue:completionHandler:] via IMP.
+    /// Calls -[SimDevice launchApplicationWithID:options:pid:error:] (synchronous API, same as simctl).
+    /// The async variant's completion handler depends on XPC state from the boot handshake,
+    /// which lives in whichever process called boot. When Simulator.app isn't focused, those
+    /// channels go cold and the completion never fires. The synchronous API avoids this entirely.
     /// Returns the launched process PID.
     public func launchApp(device: AnyObject, bundleID: String, terminateExisting: Bool = false) throws -> Int32 {
-        let sel = NSSelectorFromString("launchApplicationAsyncWithID:options:completionQueue:completionHandler:")
+        let sel = NSSelectorFromString("launchApplicationWithID:options:pid:error:")
         guard let method = class_getInstanceMethod(type(of: device), sel) else {
-            throw PrivateFrameworkError.classNotFound("SimDevice.launchApplicationAsyncWithID:options:completionQueue:completionHandler:")
+            throw PrivateFrameworkError.classNotFound("SimDevice.launchApplicationWithID:options:pid:error:")
         }
 
-        typealias LaunchFn = @convention(c) (AnyObject, Selector, NSString, NSDictionary, DispatchQueue, Any) -> Void
+        typealias LaunchFn = @convention(c) (AnyObject, Selector, NSString, NSDictionary,
+                                              UnsafeMutablePointer<pid_t>,
+                                              UnsafeMutablePointer<NSError?>) -> Bool
         let imp = method_getImplementation(method)
         let launch = unsafeBitCast(imp, to: LaunchFn.self)
 
@@ -325,32 +330,58 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
             options["terminate_running_process"] = true as NSNumber
         }
 
+        var pid: pid_t = -1
+        var launchError: NSError?
+        let success = launch(device, sel, bundleID as NSString, options as NSDictionary, &pid, &launchError)
+
+        if !success {
+            throw PrivateFrameworkError.clientCreationFailed(
+                "launchApplication failed: \(launchError?.localizedDescription ?? "unknown")")
+        }
+
+        return pid
+    }
+
+    /// Boots a simulator device using the private CoreSimulator API.
+    /// This keeps iosef's SimDevice proxy warm (it performed the boot handshake),
+    /// so subsequent calls like launchApp work without depending on Simulator.app's XPC state.
+    /// Uses `persist: true` so the simulator stays booted even if iosef exits.
+    public func bootDevice(udid: String) throws {
+        let device = try lookUpDevice(udid: udid)
+
+        let sel = NSSelectorFromString("bootAsyncWithOptions:completionQueue:completionHandler:")
+        guard let method = class_getInstanceMethod(type(of: device), sel) else {
+            throw PrivateFrameworkError.classNotFound("SimDevice.bootAsyncWithOptions:completionQueue:completionHandler:")
+        }
+
+        typealias BootFn = @convention(c) (AnyObject, Selector, NSDictionary, DispatchQueue, Any) -> Void
+        let imp = method_getImplementation(method)
+        let boot = unsafeBitCast(imp, to: BootFn.self)
+
+        let options: [String: Any] = ["persist": true as NSNumber]
+
         let group = DispatchGroup()
         group.enter()
 
-        let queue = DispatchQueue(label: "com.simulator-mcp.launch.callback")
-        var resultPID: Int32 = -1
-        var resultError: NSError?
+        let queue = DispatchQueue(label: "com.iosef.boot.callback")
+        var bootError: NSError?
 
-        let completionBlock: @convention(block) (NSError?, Int32) -> Void = { error, pid in
-            resultError = error
-            resultPID = pid
+        let completionBlock: @convention(block) (NSError?) -> Void = { error in
+            bootError = error
             group.leave()
         }
         let completionObj: Any = completionBlock
 
-        launch(device, sel, bundleID as NSString, options as NSDictionary, queue, completionObj)
+        boot(device, sel, options as NSDictionary, queue, completionObj)
 
-        let waitResult = group.wait(timeout: .now() + 30.0)
+        let waitResult = group.wait(timeout: .now() + 60.0)
         if waitResult == .timedOut {
-            throw TimeoutError.processTimedOut(command: "launchApplication(\(bundleID))", timeoutSeconds: 30.0)
+            throw TimeoutError.processTimedOut(command: "bootDevice(\(udid))", timeoutSeconds: 60.0)
         }
 
-        if let error = resultError {
-            throw PrivateFrameworkError.clientCreationFailed("launchApplication failed: \(error.localizedDescription)")
+        if let error = bootError {
+            throw PrivateFrameworkError.clientCreationFailed("bootDevice failed: \(error.localizedDescription)")
         }
-
-        return resultPID
     }
 
     // MARK: - Framebuffer Capture via IOSurface

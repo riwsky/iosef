@@ -443,7 +443,7 @@ struct Start: AsyncParsableCommand {
             }
             if let device, device.state != "Booted" {
                 print("Booting simulator \"\(name)\"...")
-                _ = try await SimCtlClient.run("/usr/bin/xcrun", arguments: ["simctl", "boot", device.udid])
+                try PrivateFrameworkBridge.shared.bootDevice(udid: device.udid)
             }
         } else {
             let device = try SimCtlClient.getBootedDevice()
@@ -543,7 +543,7 @@ struct Connect: AsyncParsableCommand {
         // Boot if needed
         if device.state != "Booted" {
             print("Booting simulator \"\(device.name)\"...")
-            _ = try await SimCtlClient.run("/usr/bin/xcrun", arguments: ["simctl", "boot", device.udid])
+            try PrivateFrameworkBridge.shared.bootDevice(udid: device.udid)
         }
 
         // Open Simulator.app
