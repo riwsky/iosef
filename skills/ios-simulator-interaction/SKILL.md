@@ -1,38 +1,176 @@
 ---
 name: ios-simulator-interaction
-description: Interaction with the iOS simulator using iosef, a CLI optimized for agent usage. Use when building or testing changes on the iOS Simulator — viewing the screen, tapping buttons, reading accessibility trees, testing drag-reorder, swipe-to-delete, or scrolling.
+description: >-
+  Interaction with the iOS simulator using iosef, a CLI optimized for agent
+  usage. Use when building or testing changes on the iOS Simulator — viewing
+  the screen, tapping buttons, reading accessibility trees, finding elements
+  by selector, asserting UI state, scripting multi-step test flows, installing
+  and launching apps, reading simulator logs, or performing gestures like
+  drag-reorder, swipe-to-delete, and scrolling. If you're doing anything with
+  an iOS simulator, use this skill.
 ---
 
 # iOS Simulator Interaction
 
-Use `iosef` (via Bash) as the primary tool for all iOS simulator interactions. Compared to `idb` and `simctl`, it makes your life easier by:
-* allowing you to interact (tap, input, etc) by AXtree selectors instead of only by bare coordinates
-* scaling screenshots so their coordinate space matches the tool coordinates
-* inferring which simulator to used based on VCS root, or explicit session establishment (see `iosef start --help` or `iosef connect --help`)
+Use `iosef` (via Bash) as the primary tool for all iOS simulator interactions. Compared to `idb` and `simctl`, it:
+* Lets you interact by AX-tree selectors (`--name`, `--role`, `--identifier`) instead of only bare coordinates
+* Scales screenshots so pixel coordinates match iOS point space — no translation needed
+* Infers which simulator to use from VCS root or session state
+* Provides dedicated assert commands (`exists`, `count`, `text`, `wait`) with exit codes for scripting
 
-Always run `iosef --help` at least once, to get a sense of how it works. You can also pass `--help` to subcommands for details on their arguments.
+## Getting Started
 
-Local session state is kept in `.iosef` in the current directory, so ensure that's in `.gitignore` to keep it out of version control history.
+**Session lifecycle:**
 
+```bash
+# Create a local session (scoped to this directory)
+iosef start --local --device "my-sim"
 
-## Recommendations when using iosef
+# ... do work (tap, type, describe, view, etc.) ...
 
-* Make use of --local sessions with `iosef start`/`connect` to avoid accidentally interfering with simulators being used by other agents on the system.
-* `iosef describe`, with no arguments, will give you the accessibility tree - a much more compact starting point than screenshots
-* Prefer selector-based targeting to coordinate-based targeting, as selectors are more robust (to e.g. scroll position) and don't require you to recheck the accessibility tree on reuse.
-* Remember that you can chain multiple commands together using your bash tools, to save yourself some round trips.
-* Prefer `iosef view` to other screenshot methods like `simctl` or `idb`, since it lines up the coordinate spaces for you.
-* For even more complicated chaining, consider writing small scripts that parse `--json` output.
+# Tear down — shuts down simulator, deletes device, removes .iosef/
+iosef stop
+```
 
-## Reading the AX Tree
+Use `--local` to avoid interfering with simulators used by other agents. Session state lives in `.iosef/state.json` — ensure `.iosef/` is in `.gitignore`.
 
-Always `iosef describe` at the start of your usage. The format is:
+For existing simulators: `iosef connect "iPhone 16" --local`
+
+Check session state anytime: `iosef status` (or `iosef status --json`)
+
+## Core Workflow
+
+### Inspect: describe and view
+
+Always start with `iosef describe` to get the accessibility tree. The format is:
 
 ```
 AXButton "Label" (center_x±half_width, center_y±half_height)
 ```
 
 The **center values are the tap targets**. Example: `AXButton "Start" (197±160, 270±22)` → tap at (197, 270).
+
+```bash
+iosef describe                        # Full AX tree
+iosef describe --depth 2              # Limit tree depth
+iosef describe --x 200 --y 400       # What's at this coordinate?
+iosef describe --json | jq '.. | objects | select(.role == "button")'
+```
+
+Use `iosef view` for screenshots (not `simctl` or `idb` — iosef aligns coordinate spaces):
+
+```bash
+iosef view                            # Screenshot to temp file (prints path)
+iosef view --output /tmp/screen.png   # Screenshot to specific path
+```
+
+### Interact: tap, type, swipe
+
+**Prefer selectors over coordinates** — selectors survive layout changes and scroll position shifts.
+
+```bash
+iosef tap --name "Sign In"                    # Find element + tap
+iosef tap --role AXButton --name "Submit"     # Combine selectors
+iosef tap --name "Menu" --duration 0.5        # Long-press
+iosef tap --x 200 --y 400                     # Coordinate fallback
+```
+
+`type` combines find + tap + type in one step when given selectors:
+
+```bash
+iosef type --text "Hello World"               # Type into focused field
+iosef type --name "Search" --text "query"     # Find field + tap + type
+iosef type --identifier "text_field" --text "hello"
+```
+
+```bash
+iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
+iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
+```
+
+### Assert: exists, count, text, wait
+
+Dedicated commands for checking UI state — no need to `describe | grep`.
+
+```bash
+iosef exists --name "Sign In"                 # Prints "true"/"false", exit 0 or 1
+iosef count --role AXButton                   # Prints number of matches
+iosef text --name "Tap count"                 # Extracts text content from first match
+iosef text --identifier "tap_count_label"     # By accessibilityIdentifier
+
+iosef wait --name "Welcome"                   # Poll until element appears (default 10s)
+iosef wait --name "Continue" --timeout 5      # Custom timeout
+```
+
+Use `wait` instead of `sleep` — it's deterministic and returns as soon as the element appears.
+
+## Selectors
+
+Three selector flags, composable with AND logic:
+
+| Flag | Matching | Example |
+|---|---|---|
+| `--name "text"` | Case-insensitive **substring** on label or title | `--name "Sign"` matches "Sign In" |
+| `--identifier "id"` | **Exact** match on `accessibilityIdentifier` | `--identifier "grid_2_3"` |
+| `--role AXType` | Case-insensitive **exact** match on role | `--role AXButton` |
+
+Combine them: `iosef tap --role AXButton --name "Submit"` matches only buttons whose label contains "Submit".
+
+`find` lets you explore what's available: `iosef find --role AXButton` lists all buttons.
+
+## Chaining and Scripting
+
+Chain multiple commands in one Bash call to save round trips:
+
+```bash
+iosef tap --name "Sign In" && iosef wait --name "Dashboard" --timeout 10
+```
+
+**Exit codes** for scripting conditionals:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success (or check passed) |
+| `1` | Check failed (`exists` → false) or runtime error |
+| `2` | Bad arguments / usage error |
+
+Use in scripts:
+
+```bash
+if iosef exists --name "Error"; then
+    echo "Error dialog appeared"
+    exit 1
+fi
+```
+
+For complex flows, parse `--json` output:
+
+```bash
+COUNT=$(iosef count --role AXButton --json | jq '.count')
+```
+
+## App Management
+
+```bash
+iosef install_app --app-path ./build/MyApp.app
+iosef launch_app --bundle-id com.example.myapp
+iosef launch_app --bundle-id com.example.myapp --terminate-running  # Kill + relaunch
+```
+
+## Logging
+
+Read simulator logs to verify app behavior:
+
+```bash
+iosef log_show --process MyApp --last 5s           # Recent entries from a process
+iosef log_show --predicate 'process == "MyApp"' --last 3s
+iosef log_show --level debug --last 1m
+
+iosef log_stream --process SpringBoard --duration 3  # Live stream for N seconds
+iosef log_stream --predicate 'process == "MyApp"' --duration 10
+```
+
+Useful for verifying callbacks fired, checking error messages, or debugging UI state.
 
 ## Advanced Gestures
 
@@ -68,48 +206,70 @@ dragHandle.accessibilityLabel = "Reorder"
 
 Then the AX tree shows: `AXImage "Reorder" (374±12, 221±7)` — use center (374, 221).
 
-## Cleanup
+## Command Quick Reference
 
-When you're done with a simulator session:
+**Session**
 
-```bash
-iosef stop
-```
+| Command | Purpose |
+|---|---|
+| `start --local --device "N"` | Create + boot simulator, local session |
+| `connect "N" --local` | Associate with existing simulator |
+| `status` | Show simulator name, UDID, state |
+| `stop` | Shut down, delete device, remove session |
 
-This shuts down the simulator, deletes the device, and removes the session directory.
+**Inspect**
 
-For worktree-based workflows where each worktree gets its own simulator, consider adding a `WorktreeRemove` hook that runs `xcrun simctl delete "$NAME"` to prevent orphaned simulators from accumulating.
+| Command | Purpose |
+|---|---|
+| `describe` | Full AX tree |
+| `describe --depth N` | Limit tree depth |
+| `describe --x X --y Y` | Element at coordinate |
+| `view --output path.png` | Coordinate-aligned screenshot |
 
-## Proof of Work
+**Interact**
 
-If a user request a demo or walkthrough, consider using [simonw/showboat](https://github.com/simonw/showboat). If users don't already have it installed, you can run it without installing it first by using `uvx showboat --help`.
+| Command | Purpose |
+|---|---|
+| `tap --name "N"` | Tap by selector |
+| `tap --x X --y Y` | Tap at coordinates |
+| `tap --name "N" --duration S` | Long-press |
+| `type --name "N" --text "T"` | Find + tap + type |
+| `type --text "T"` | Type into focused field |
+| `swipe --x-start/y-start/x-end/y-end` | Swipe gesture |
 
-General usage of `showboat` is better understood via it's own documentation, but some `iosef`-specific tips include:
+**Assert**
 
-* remember to include the session start and stop portions in the showboat script - they're designed to be replayed, so they shouldn't assume a certain simulator already exists
-* also ensure the showboat script includes whatever's needed to set up expected app state
-* use the selector-based interaction forms, as they're more robust. If demoing something that is naturally coordinate-based, like scrolling, consider chaining `iosef describe --json` to grab coordinates at showboat replay time instead of baking in the coordinates at creation time.
+| Command | Purpose |
+|---|---|
+| `exists --name "N"` | Check presence (exit 0/1) |
+| `count --role AXButton` | Count matching elements |
+| `text --identifier "id"` | Extract text from first match |
+| `wait --name "N" --timeout S` | Poll until element appears |
+| `find --role AXButton` | List matching elements |
 
+**App & Logs**
 
-```bash
-showboat init demos/my-feature-demo.md "Feature Name Demo"
-showboat note demos/my-feature-demo.md "Description of what we're demonstrating."
-# Setup: build app and create any required state
-showboat exec demos/my-feature-demo.md bash "./scripts/build.sh 2>&1 | tail -1"
-showboat exec demos/my-feature-demo.md bash "sleep 1"
-showboat exec demos/my-feature-demo.md bash "iosef tap --name 'Add' --device \$NAME_OR_UDID 2>/dev/null"
-# ... more setup as needed ...
-# Then the actual demo actions
-showboat exec demos/my-feature-demo.md bash "iosef tap --name 'Button' --device \$NAME_OR_UDID 2>/dev/null"
-showboat exec demos/my-feature-demo.md bash "iosef view --device \$NAME_OR_UDID --output /tmp/screenshot.png 2>/dev/null"
-showboat image demos/my-feature-demo.md /tmp/screenshot.png
-showboat verify demos/my-feature-demo.md  # must pass before done
-```
+| Command | Purpose |
+|---|---|
+| `install_app --app-path P` | Install .app or .ipa |
+| `launch_app --bundle-id B` | Launch app |
+| `log_show --process P --last T` | Recent log entries |
+| `log_stream --process P --duration S` | Live log stream |
 
-**Timing**: Use `wait` commands (`iosef wait --name 'Expected' --timeout 5`) instead of fixed `sleep` for state that depends on async operations (e.g. WatchConnectivity sync). Fixed sleeps are flaky; `wait` is deterministic.
+All commands accept `--json` for machine-readable output and `--device` to target a specific simulator.
+
+## Demos with showboat
+
+For user-facing demos, use [showboat](https://github.com/simonw/showboat) (`uvx showboat`). Tips:
+- Include session start/stop in the showboat script — demos should be self-contained
+- Use selector-based interactions (more robust across replays)
+- For coordinate-dependent actions (scrolling), chain `iosef describe --json` to grab coordinates at replay time
+- Use `iosef wait` instead of `sleep` for timing
 
 ## Troubleshooting
 
-- **Blank AX tree?** If `describe` returns only `AXApplication (0±0, 0±0)`, the simulator process is probably broken. Don't work around it with screenshots — kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
-- **Code doesn't have accessibility labels?**: Add them - it'd improve the UX for more than just yourself. Let the user know if/when you do this.
-- **Not seeing elements and labels expected in the AXTree?** Some container elements like `AXGroup`s don't naturally show up in the top level describe calls - an issue that also afflicts `idb`, and is seemingly a bug in Apple's frameworks. Sometimes this can be resolved by doing a point-wise describe on the coordinates of the container, but you might need to fall back to screenshots.
+- **Blank AX tree?** If `describe` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
+- **Missing elements in AX tree?** Some `AXGroup` containers don't appear in top-level `describe` — try a point-wise describe on the container's coordinates, or fall back to screenshots.
+- **No accessibility labels?** Add them to the source — it improves the UX for all users, not just automation. Let the user know when you do this.
+- **Worktree cleanup**: For worktree-based workflows, consider a `WorktreeRemove` hook that runs `xcrun simctl delete "$NAME"` to prevent orphaned simulators.
+- **Selector not matching?** Remember: `--name` is a case-insensitive substring (so `--name "Sign"` matches "Sign In"), while `--identifier` is exact.

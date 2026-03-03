@@ -1,0 +1,71 @@
+{
+  "skill_name": "ios-simulator-interaction",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Build MCPTestApp (use ./scripts/build-test-app.sh), launch it in the simulator, tap the grid button at Row 2 Column 3, and verify the tap count shows 1. Take a screenshot.",
+      "expected_output": "The agent starts a simulator, builds and installs MCPTestApp, taps the correct grid button using a selector, verifies the tap count is 1, and captures a screenshot.",
+      "expectations": [
+        "Used iosef start to create a simulator session",
+        "Used iosef install_app to install the built app",
+        "Used iosef launch_app to launch the app",
+        "Tapped using selector (--name 'Row 2 Column 3' or --identifier 'grid_2_3'), not raw coordinates",
+        "Used iosef text or iosef exists to verify the tap count (not describe | grep)",
+        "Used iosef view to capture a screenshot",
+        "Used iosef stop to clean up",
+        "Did NOT run iosef --help"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Type 'hello world' into the text field in MCPTestApp and check the simulator logs to confirm the onChange fired.",
+      "expected_output": "The agent types text using a selector-based type command and reads logs to verify the onChange callback.",
+      "expectations": [
+        "Used iosef type with --name or --identifier selector (e.g. --identifier 'text_field' --text 'hello world')",
+        "Used iosef log_show or iosef log_stream to read logs",
+        "Found the '[MCPTest] Text changed' log entry confirming onChange fired",
+        "Did NOT run iosef --help",
+        "Used selectors instead of coordinates for the text field"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Write a bash script that launches MCPTestApp in the simulator, waits for it to load, counts the grid buttons, taps three of them in sequence, verifies the tap count is 3, and takes a screenshot. The script should use exit codes to detect failures.",
+      "expected_output": "The agent writes a bash script using iosef commands with proper exit code handling, count/exists/text assertions, and sequential taps.",
+      "expectations": [
+        "Script uses iosef count to count grid buttons",
+        "Script uses iosef exists or iosef wait for load detection",
+        "Script uses iosef text to verify tap count is 3",
+        "Script uses exit codes in conditionals (e.g. if iosef exists ...; then)",
+        "Script taps three buttons using selectors",
+        "Script captures a screenshot with iosef view",
+        "Did NOT run iosef --help"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Swipe right on the swipe test area in MCPTestApp and verify the status label shows the correct swipe direction.",
+      "expected_output": "The agent uses describe to find the swipe area coordinates, performs a rightward swipe, and verifies the status label updated.",
+      "expectations": [
+        "Used iosef describe to find the swipe area coordinates",
+        "Used iosef swipe with appropriate start/end coordinates for a rightward swipe",
+        "Used iosef text --identifier 'swipe_status_label' to verify the swipe direction (not describe | grep)",
+        "The verified text contains a right arrow or 'right' direction indicator",
+        "Did NOT run iosef --help"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "I need to interact with an iOS simulator to test some UI changes. Tap a button called 'Row 0 Column 0' and verify a success indicator appears.",
+      "expected_output": "The agent completes the task from skill knowledge alone — starts a session, taps the button by selector, and verifies state change — without running --help.",
+      "expectations": [
+        "Started a simulator session with iosef start",
+        "Used iosef tap --name 'Row 0 Column 0' (selector, not coordinates)",
+        "Verified the tap registered using iosef text, iosef exists, or iosef describe",
+        "Did NOT run iosef --help",
+        "Did NOT need to read iosef documentation or man pages to complete the task",
+        "Completed the full task successfully"
+      ]
+    }
+  ]
+}

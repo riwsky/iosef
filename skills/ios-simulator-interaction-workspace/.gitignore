@@ -1,0 +1,4 @@
+# Eval iteration artifacts (screenshots, transcripts, grading)
+# These are transient and regenerated each eval run
+iteration-*/
+skill-snapshot/
