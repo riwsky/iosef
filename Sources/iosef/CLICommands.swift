@@ -135,7 +135,7 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
             switch content {
             case .text(let text):
                 print(text)
-            case .image(let data, let mimeType, _):
+            case .image(let data, let mimeType, _, _):
                 guard let imageData = Data(base64Encoded: data) else {
                     fputs("Error: failed to decode base64 image data\n", stderr)
                     continue
@@ -152,7 +152,7 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
                     try imageData.write(to: URL(fileURLWithPath: screenshotPath))
                     print(screenshotPath)
                 }
-            case .audio(let data, let mimeType):
+            case .audio(let data, let mimeType, _, _):
                 if let outputPath = output {
                     let path = ensureAbsolutePath(outputPath)
                     guard let audioData = Data(base64Encoded: data) else {
