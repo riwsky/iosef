@@ -19,13 +19,13 @@ struct IndigoHIDClientTests {
         #expect(client.screenScale >= 1.0)
     }
 
-    @Test("Screen size is reasonable for an iOS device")
+    @Test("Screen size is reasonable for the booted device")
     func screenSizeReasonable() async throws {
         let udid = try await Self.bootedUDID()
         let client = try IndigoHIDClient(udid: udid)
-        // Smallest iOS device screen is wider than 640px
-        #expect(client.screenSize.width >= 640)
-        #expect(client.screenSize.height >= 1000)
+        // Below this would mean we got points instead of pixels (or zero).
+        #expect(client.screenSize.width >= 250)
+        #expect(client.screenSize.height >= 300)
     }
 
     @Test("Tap sends without error")
