@@ -102,7 +102,7 @@ func applyScope(from common: CommonOptions) {
 
 // MARK: - Configuration
 
-let serverVersion = "0.2.5"
+let serverVersion = "0.2.6"
 let filteredTools: Set<String> = {
     guard let env = ProcessInfo.processInfo.environment["IOSEF_FILTERED_TOOLS"] else {
         return []
