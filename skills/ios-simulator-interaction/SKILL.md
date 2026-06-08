@@ -269,7 +269,7 @@ For user-facing demos, use [showboat](https://github.com/simonw/showboat) (`uvx 
 ## Troubleshooting
 
 - **Blank AX tree?** If `describe` returns only `AXApplication (0±0, 0±0)`, the simulator process is broken. Kill and restart: `killall Simulator && sleep 2 && xcrun simctl boot "<device>" && open -a Simulator`, then rebuild and launch the app.
-- **Missing elements in AX tree?** Some `AXGroup` containers don't appear in top-level `describe` — try a point-wise describe on the container's coordinates, or fall back to screenshots.
+- **Missing elements in AX tree?** `describe` now recovers children of containers that report none (e.g. the SwiftUI `NavigationStack` nav bar — Back / title / `.toolbar` items) by hit-testing across the container's frame, so selector commands like `tap --name "Back"` work. If an element is still missing, try a point-wise describe on its coordinates, or fall back to screenshots.
 - **No accessibility labels?** Add them to the source — it improves the UX for all users, not just automation. Let the user know when you do this.
 - **Worktree cleanup**: For worktree-based workflows, consider a `WorktreeRemove` hook that runs `xcrun simctl delete "$NAME"` to prevent orphaned simulators.
 - **Selector not matching?** Remember: `--name` is a case-insensitive substring (so `--name "Sign"` matches "Sign In"), while `--identifier` is exact.
