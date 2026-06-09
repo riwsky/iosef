@@ -141,9 +141,68 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             let uniformScale = Double(iosPointSize.width) / rootFrame.width
             let yOffset = (Double(iosPointSize.height) - rootFrame.height * uniformScale) / 2
                 logDiagnostic("frame transform: AX root \(rootFrame.width)x\(rootFrame.height) -> iOS \(iosPointSize.width)x\(iosPointSize.height) (uniformScale \(String(format: "%.3f", uniformScale)), yOffset \(String(format: "%.1f", yOffset)))")
-            return result.map { transformFrames($0, uniformScale: uniformScale, yOffset: yOffset, originX: rootFrame.x, originY: rootFrame.y) }
+            let transform = FrameTransform(uniformScale: uniformScale, yOffset: yOffset, originX: rootFrame.x, originY: rootFrame.y)
+            let transformed = result.map { transformFrames($0, uniformScale: uniformScale, yOffset: yOffset, originX: rootFrame.x, originY: rootFrame.y) }
+            return transformed.map {
+                expandEmptyContainers($0, transform: transform, token: token,
+                                      deadline: deadline, timeoutSeconds: timeoutSeconds,
+                                      elementCount: &elementCount)
+            }
         }
         return result
+    }
+
+    /// The uniform-scale + vertical-centering transform that maps raw AX frames to iOS
+    /// point space. `objectAtPoint:` hit-testing also operates in this point space, so
+    /// hit-test results must be transformed with the same parameters.
+    private struct FrameTransform {
+        let uniformScale: Double
+        let yOffset: Double
+        let originX: Double
+        let originY: Double
+    }
+
+    /// Post-transform pass for issue #2: walks the (point-space) tree and, for every
+    /// grouping container that reported no children but occupies non-trivial bounds
+    /// (e.g. the SwiftUI NavigationStack nav-bar AXGroup), recovers its children by
+    /// hit-testing across the container's point-space frame. Recovered nodes are not
+    /// themselves re-expanded, bounding the work to one sweep layer.
+    private func expandEmptyContainers(_ node: TreeNode, transform: FrameTransform, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int) -> TreeNode {
+        var children = node.children
+
+        if HitTestChildDiscovery.shouldDiscoverChildren(
+            role: node.role, frame: node.frame, reportedChildCount: children.count),
+           let frame = node.frame, ContinuousClock.now < deadline {
+            children = HitTestChildDiscovery.discoverChildren(
+                in: frame,
+                containerFrame: frame,
+                isCancelled: { ContinuousClock.now >= deadline }
+            ) { x, y in
+                // Hit-test in point space, then map the hit's raw frame back to points.
+                guard let raw = hitTestNode(at: CGPoint(x: x, y: y), token: token,
+                                            deadline: deadline, timeoutSeconds: timeoutSeconds,
+                                            elementCount: &elementCount) else { return nil }
+                return transformFrames(raw, uniformScale: transform.uniformScale,
+                                       yOffset: transform.yOffset,
+                                       originX: transform.originX, originY: transform.originY)
+            }
+            if !children.isEmpty {
+                logDiagnostic("hit-test fallback: recovered \(children.count) children for empty \(node.role ?? "?") at \(frame.x),\(frame.y)")
+            }
+        } else {
+            // Only recurse into containers we did NOT expand — recovered children are terminal.
+            children = children.map {
+                expandEmptyContainers($0, transform: transform, token: token,
+                                      deadline: deadline, timeoutSeconds: timeoutSeconds,
+                                      elementCount: &elementCount)
+            }
+        }
+
+        return TreeNode(
+            role: node.role, label: node.label, title: node.title, value: node.value,
+            identifier: node.identifier, hint: node.hint, traits: node.traits,
+            frame: node.frame, children: children
+        )
     }
 
     /// Returns the accessibility element at the given iOS point coordinates.
@@ -378,74 +437,40 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         )
     }
 
-    /// Grid-scan fallback: when accessibilityChildren returns empty (watchOS),
-    /// discover elements by hit-testing at regular intervals across the screen.
-    /// Deduplicates by frame to avoid returning the same element multiple times.
-    private func gridScanChildren(rootFrame: CGRect, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int) -> [TreeNode] {
-        let step: CGFloat = 10
-        var seen = Set<String>() // "x,y,w,h" frame keys for dedup
-        var elements: [TreeNode] = []
-
-        var probeY = rootFrame.origin.y + step / 2
-        while probeY < rootFrame.origin.y + rootFrame.height {
-            var probeX = rootFrame.origin.x + step / 2
-            while probeX < rootFrame.origin.x + rootFrame.width {
-                if ContinuousClock.now >= deadline { return elements }
-
-                // Skip points already covered by a discovered element's frame
-                if elements.contains(where: { node in
-                    guard let f = node.frame else { return false }
-                    return Double(probeX) >= f.x && Double(probeX) <= f.x + f.width &&
-                           Double(probeY) >= f.y && Double(probeY) <= f.y + f.height
-                }) {
-                    probeX += step
-                    continue
-                }
-
-                autoreleasepool {
-                    guard let translation = performPointTranslation(
-                        point: CGPoint(x: probeX, y: probeY), token: token
-                    ) else {
-                        return
-                    }
-
-                    setBridgeToken(token, on: translation as AnyObject)
-
-                    guard let elem = macPlatformElement(from: translation) else {
-                        return
-                    }
-
-                    (elem as AnyObject).value(forKey: "translation").map {
-                        setBridgeToken(token, on: $0 as AnyObject)
-                    }
-
-                    // Serialize without recursing into children (they're likely empty too)
-                    guard let node = try? serializeElement(elem, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount) else {
-                        return
-                    }
-
-                    // Dedup by frame
-                    let frameKey: String
-                    if let f = node.frame {
-                        frameKey = "\(f.x),\(f.y),\(f.width),\(f.height)"
-                    } else {
-                        frameKey = "nil-\(node.identifier ?? node.label ?? UUID().uuidString)"
-                    }
-
-                    if !seen.contains(frameKey) {
-                        seen.insert(frameKey)
-                        // Skip the root element itself (same frame as rootFrame)
-                        if node.role != "AXApplication" {
-                            elements.append(node)
-                        }
-                    }
-                }
-
-                probeX += step
+    /// Hit-tests at a single point and serializes the element found there, without
+    /// recursing into a further hit-test sweep. Shared by the per-container fallback
+    /// and the watchOS grid scan. Returns nil when no element is found at the point.
+    private func hitTestNode(at point: CGPoint, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int) -> TreeNode? {
+        autoreleasepool {
+            guard let translation = performPointTranslation(point: point, token: token) else {
+                return nil
             }
-            probeY += step
+            setBridgeToken(token, on: translation as AnyObject)
+            guard let elem = macPlatformElement(from: translation) else { return nil }
+            (elem as AnyObject).value(forKey: "translation").map {
+                setBridgeToken(token, on: $0 as AnyObject)
+            }
+            return try? serializeElement(elem, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
         }
+    }
 
+    /// Grid-scan fallback: when accessibilityChildren returns empty for the whole tree
+    /// (common on watchOS), discover elements by hit-testing across the entire screen.
+    /// Delegates the sweep + dedup to the same logic the per-container fallback uses.
+    private func gridScanChildren(rootFrame: CGRect, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int) -> [TreeNode] {
+        let region = TreeNode.FrameInfo(
+            x: Double(rootFrame.origin.x), y: Double(rootFrame.origin.y),
+            width: Double(rootFrame.size.width), height: Double(rootFrame.size.height)
+        )
+        let elements = HitTestChildDiscovery.discoverChildren(
+            in: region,
+            containerFrame: region,
+            isCancelled: { ContinuousClock.now >= deadline }
+        ) { x, y in
+            hitTestNode(at: CGPoint(x: x, y: y), token: token,
+                        deadline: deadline, timeoutSeconds: timeoutSeconds,
+                        elementCount: &elementCount)
+        }
         logDiagnostic("grid scan: \(elements.count) elements discovered via hit-testing")
         return elements
     }
