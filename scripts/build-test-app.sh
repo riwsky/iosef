@@ -38,6 +38,23 @@ quiet() {
     fi
 }
 
+# Regenerate the Xcode project from project.yml via XcodeGen. The .xcodeproj is
+# gitignored and treated as a build artifact — adding/renaming source files only
+# requires editing project.yml (no manual project.pbxproj surgery). Args: <dir> <name>.
+generate_project() {
+    local dir="$1" name="$2"
+    if ! command -v xcodegen >/dev/null 2>&1; then
+        if [ -d "$dir/$name.xcodeproj" ]; then
+            return 0  # no generator, but a project already exists — use it
+        fi
+        echo "error: xcodegen not found and $name.xcodeproj is missing." >&2
+        echo "Install it with: brew install xcodegen" >&2
+        exit 1
+    fi
+    echo "==> Generating $name.xcodeproj from project.yml..."
+    quiet bash -c "cd '$dir' && xcodegen generate"
+}
+
 # Find iOS simulator by exact name, return its UUID
 get_simulator_id() {
     local name="$1"
@@ -90,6 +107,8 @@ if ios_runtimes:
         xcrun simctl boot "$SIM_ID" >> "$LOG" 2>&1 || true
     fi
 
+    generate_project "$IOS_PROJECT_DIR" "MCPTestApp"
+
     echo "==> Building $IOS_SCHEME for simulator '$SIM_NAME' ($SIM_ID)..."
     quiet xcodebuild build \
         -project "$IOS_PROJECT_DIR/MCPTestApp.xcodeproj" \
@@ -125,6 +144,8 @@ if runtimes:
     if ! xcrun simctl list devices | grep "$WATCH_SIM_ID" | grep -q "Booted"; then
         xcrun simctl boot "$WATCH_SIM_ID" >> "$LOG" 2>&1 || true
     fi
+
+    generate_project "$WATCH_PROJECT_DIR" "WatchTestApp"
 
     echo "==> Building $WATCH_SCHEME for simulator '$WATCH_SIM_NAME' ($WATCH_SIM_ID)..."
     quiet xcodebuild build \
