@@ -5,4 +5,5 @@ Package.resolved
 *.xcodeproj/
 xcuserdata/
 DerivedData/
+build/
 .DS_Store

@@ -1,0 +1,27 @@
+name: WatchTestApp
+options:
+  bundleIdPrefix: com.mcp-test
+  deploymentTarget:
+    watchOS: "10.0"
+targets:
+  WatchTestApp:
+    type: application
+    platform: watchOS
+    sources:
+      - WatchTestApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mcp-test.playground.watchapp
+        SDKROOT: watchos
+        SUPPORTED_PLATFORMS: "watchos watchsimulator"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_WKApplication: YES
+        INFOPLIST_KEY_WKWatchOnly: YES
+        TARGETED_DEVICE_FAMILY: "4"
+schemes:
+  WatchTestApp:
+    build:
+      targets:
+        WatchTestApp: all
+    run:
+      config: Debug

@@ -1,0 +1,26 @@
+name: MCPTestApp
+options:
+  bundleIdPrefix: com.mcp-test
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  MCPTestApp:
+    type: application
+    platform: iOS
+    sources:
+      - MCPTestApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mcp-test.playground
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        TARGETED_DEVICE_FAMILY: "1,2"
+schemes:
+  MCPTestApp:
+    build:
+      targets:
+        MCPTestApp: all
+    run:
+      config: Debug
