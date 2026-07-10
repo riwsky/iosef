@@ -32,6 +32,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         self.bridge = PrivateFrameworkBridge.shared
         try bridge.ensureAXPLoaded()
 
+        // iOS 27 runtimes no longer auto-enable accessibility for AXP clients;
+        // without this, every attribute request returns empty (0x0 rootless tree).
+        SimulatorAccessibilityEnabler.ensureEnabled(udid: udid)
+
         self.translator = try bridge.getAXPTranslatorSharedInstance()
         self.device = try bridge.lookUpDevice(udid: udid)
 
@@ -572,7 +576,14 @@ final class AXPTranslationDispatcher: NSObject, @unchecked Sendable {
             }
 
             do {
-                return try self.bridge.sendAccessibilityRequest(request, toDevice: dev, timeoutSeconds: xpcTimeout)
+                if ProcessInfo.processInfo.environment["IOSEF_AXP_DUMP"] != nil {
+                    logDiagnostic("request \(type(of: request)): \(request)", prefix: "AXPDump")
+                }
+                let response = try self.bridge.sendAccessibilityRequest(request, toDevice: dev, timeoutSeconds: xpcTimeout)
+                if ProcessInfo.processInfo.environment["IOSEF_AXP_DUMP"] != nil {
+                    logDiagnostic("response \(type(of: response)): \(response)", prefix: "AXPDump")
+                }
+                return response
             } catch {
                 logDiagnostic("XPC call failed: \(error.localizedDescription)")
                 return Self.emptyAXPResponse()
