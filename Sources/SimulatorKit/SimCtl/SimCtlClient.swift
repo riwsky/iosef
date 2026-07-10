@@ -1,6 +1,6 @@
 import Foundation
 
-/// Shell command runner (for `open -a Simulator.app` only) and device resolution
+/// Shell command runner (for opening the simulator GUI only) and device resolution
 /// via direct CoreSimulator API calls through PrivateFrameworkBridge.
 public enum SimCtlClient {
 
@@ -13,7 +13,7 @@ public enum SimCtlClient {
     }
 
     /// Runs a command with arguments and returns stdout/stderr.
-    /// Used only for `open -a Simulator.app`.
+    /// Used only for opening the simulator GUI.
     public static func run(_ command: String, arguments: [String], timeout: Duration? = nil) async throws -> CommandResult {
         let timeout = timeout ?? defaultTimeout
         logDiagnostic("run: \(command) \(arguments.prefix(4).joined(separator: " "))...", prefix: "SimCtl")
@@ -238,6 +238,33 @@ public enum SimCtlClient {
     /// Deletes a simulator.
     public static func deleteSimulator(udid: String) async throws {
         _ = try await run("/usr/bin/xcrun", arguments: ["simctl", "delete", udid])
+    }
+
+    /// Opens the simulator GUI. Xcode 26 and earlier ship Simulator.app; Xcode 27
+    /// replaced it with DeviceHub.app inside the Xcode bundle, so try each in turn.
+    public static func openSimulatorGUI() async throws {
+        var candidates = ["Simulator.app"]
+        if let devDir = try? await run("/usr/bin/xcode-select", arguments: ["-p"]).stdout,
+           devDir.hasSuffix("/Contents/Developer") {
+            let xcodeBundle = String(devDir.dropLast("/Contents/Developer".count))
+            candidates.append("\(xcodeBundle)/Contents/Applications/DeviceHub.app")
+        }
+        var lastError: Error?
+        for app in candidates {
+            do {
+                _ = try await run("/usr/bin/open", arguments: ["-a", app])
+                logDiagnostic("opened simulator GUI: \(app)", prefix: "SimCtl")
+                return
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? SimCtlError.commandFailed(
+            command: "/usr/bin/open",
+            args: ["-a", "Simulator.app"],
+            exitCode: 1,
+            stderr: "No simulator GUI app found (tried \(candidates.joined(separator: ", ")))"
+        )
     }
 
     public enum SimCtlError: Error, LocalizedError {
