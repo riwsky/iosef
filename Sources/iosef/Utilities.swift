@@ -114,6 +114,16 @@ func isFiltered(_ name: String) -> Bool {
     filteredTools.contains(name)
 }
 
+// MARK: - MCP content helpers
+
+extension Tool.Content {
+    /// Plain text content; swift-sdk 0.12 deprecated the short `.text(_:metadata:)` factory
+    /// in favor of `.text(text:annotations:_meta:)`, which is too noisy for our call sites.
+    static func text(_ text: String) -> Tool.Content {
+        .text(text: text, annotations: nil, _meta: nil)
+    }
+}
+
 // MARK: - Value extraction helpers
 
 /// Extracts a Double from a Value, handling both .int and .double cases.

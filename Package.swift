@@ -7,7 +7,10 @@ let package = Package(
         .macOS(.v13)
     ],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
+        // 0.x minor bumps of swift-sdk are breaking (e.g. 0.11 changed Tool.Content
+        // tuple arities), so constrain to the tested minor. Package.resolved is also
+        // committed so fresh clones build the exact pinned revision.
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", .upToNextMinor(from: "0.12.1")),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
     ],
     targets: [

@@ -133,7 +133,7 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
     } else {
         for content in result.content {
             switch content {
-            case .text(let text):
+            case .text(let text, _, _):
                 print(text)
             case .image(let data, let mimeType, _, _):
                 guard let imageData = Data(base64Encoded: data) else {
