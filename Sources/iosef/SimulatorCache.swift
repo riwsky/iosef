@@ -102,7 +102,9 @@ actor SimulatorCache {
     }
 
     /// Gets or creates an IndigoHIDClient for the given UDID.
-    /// Clients are cached indefinitely (they hold a SimDevice reference).
+    /// Clients are cached indefinitely (they hold a SimDevice reference); a client whose
+    /// HID session dies under it — a simulator reboot, say — reconnects itself on the
+    /// next event, so a cache entry never goes permanently stale.
     func getHIDClient(udid: String) throws -> IndigoHIDClient {
         if let cached = hidClients[udid] {
             return cached

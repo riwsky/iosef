@@ -53,17 +53,19 @@ public struct AXSelector: Sendable, CustomStringConvertible {
 ///   - maxDepth: Maximum recursion depth (nil for unlimited).
 /// - Returns: All matching nodes (flattened, depth-first).
 public func findNodes(matching selector: AXSelector, in nodes: [TreeNode], maxDepth: Int? = nil) -> [TreeNode] {
+    // Iterative pre-order DFS with an explicit stack. This walk previously
+    // recursed once per tree level; deep system trees (e.g. SpringBoard's
+    // widget gallery, ~1000 levels) overflowed the 512 KB cooperative-thread
+    // stack and killed the process with SIGBUS. See LargeStackThread for the
+    // walks where recursion is inherent.
     var results: [TreeNode] = []
-    findNodesImpl(selector: selector, nodes: nodes, depth: 0, maxDepth: maxDepth, results: &results)
-    return results
-}
-
-private func findNodesImpl(selector: AXSelector, nodes: [TreeNode], depth: Int, maxDepth: Int?, results: inout [TreeNode]) {
-    for node in nodes {
+    var stack: [(node: TreeNode, depth: Int)] = nodes.reversed().map { ($0, depth: 0) }
+    while let (node, depth) = stack.popLast() {
         if selector.matches(node) {
             results.append(node)
         }
         if let max = maxDepth, depth >= max { continue }
-        findNodesImpl(selector: selector, nodes: node.children, depth: depth + 1, maxDepth: maxDepth, results: &results)
+        stack.append(contentsOf: node.children.reversed().map { ($0, depth: depth + 1) })
     }
+    return results
 }

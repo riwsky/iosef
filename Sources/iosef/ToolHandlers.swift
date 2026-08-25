@@ -110,7 +110,7 @@ func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result
     let capture = try ScreenCapture.captureSimulator(udid: udid, screenScale: screenScale)
 
     return .init(content: [
-        .image(data: capture.base64, mimeType: "image/jpeg", metadata: nil),
+        .image(data: capture.base64, mimeType: "image/jpeg", annotations: nil, _meta: nil),
         .text("Screenshot captured"),
     ])
 }

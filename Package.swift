@@ -6,8 +6,20 @@ let package = Package(
     platforms: [
         .macOS(.v13)
     ],
+    traits: [
+        // Compiles in the HID reboot-recovery test suite, which creates, reboots,
+        // and deletes a throwaway simulator (~2 min) — too slow and stateful for a
+        // plain `swift test`. Run it via scripts/test-reboot-recovery.sh.
+        .trait(
+            name: "RebootTests",
+            description: "Enable the simulator reboot-recovery test suite"
+        ),
+    ],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
+        // 0.x minor bumps of swift-sdk are breaking (e.g. 0.11 changed Tool.Content
+        // tuple arities), so constrain to the tested minor. Package.resolved is also
+        // committed so fresh clones build the exact pinned revision.
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", .upToNextMinor(from: "0.12.1")),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
     ],
     targets: [

@@ -102,7 +102,7 @@ func applyScope(from common: CommonOptions) {
 
 // MARK: - Configuration
 
-let serverVersion = "0.2.6"
+let serverVersion = "0.2.7"
 let filteredTools: Set<String> = {
     guard let env = ProcessInfo.processInfo.environment["IOSEF_FILTERED_TOOLS"] else {
         return []
@@ -112,6 +112,16 @@ let filteredTools: Set<String> = {
 
 func isFiltered(_ name: String) -> Bool {
     filteredTools.contains(name)
+}
+
+// MARK: - MCP content helpers
+
+extension Tool.Content {
+    /// Plain text content; swift-sdk 0.12 deprecated the short `.text(_:metadata:)` factory
+    /// in favor of `.text(text:annotations:_meta:)`, which is too noisy for our call sites.
+    static func text(_ text: String) -> Tool.Content {
+        .text(text: text, annotations: nil, _meta: nil)
+    }
 }
 
 // MARK: - Value extraction helpers
