@@ -194,7 +194,7 @@ struct SimulatorCLI: AsyncParsableCommand {
 
               Creates a session directory (.iosef/) with state.json in the current \
               directory, boots the simulator (creating it if needed), and opens \
-              Simulator.app. Subsequent commands auto-detect the device from the session.
+              the simulator GUI. Subsequent commands auto-detect the device from the session.
 
             Lifecycle:
               iosef start       Create/boot a simulator and set up a session.
@@ -374,7 +374,7 @@ struct Start: AsyncParsableCommand {
         abstract: "Set up a session and boot the simulator.",
         discussion: """
             Creates a session directory, resolves the target device, boots the \
-            simulator if needed, and opens Simulator.app. If no simulator with the \
+            simulator if needed, and opens the simulator GUI. If no simulator with the \
             given name exists, one is created automatically.
 
             With --local, creates ./.iosef/ in the current directory. \
@@ -450,8 +450,8 @@ struct Start: AsyncParsableCommand {
             print("Using already-booted simulator: \"\(device.name)\"")
         }
 
-        // 4. Open Simulator.app
-        _ = try await SimCtlClient.run("/usr/bin/open", arguments: ["-a", "Simulator.app"])
+        // 4. Open the simulator GUI (Simulator.app, or DeviceHub on Xcode 27+)
+        try await SimCtlClient.openSimulatorGUI()
 
         let displayName = deviceName ?? "default"
         let scopeLabel = common.local ? "local" : "global"
@@ -518,7 +518,7 @@ struct Connect: AsyncParsableCommand {
         abstract: "Associate with an existing simulator.",
         discussion: """
             Looks up a simulator by name or UDID, boots it if needed, opens \
-            Simulator.app, and creates a session pointing to it.
+            the simulator GUI, and creates a session pointing to it.
 
             Examples:
               iosef connect "iPhone 16"
@@ -546,8 +546,8 @@ struct Connect: AsyncParsableCommand {
             try PrivateFrameworkBridge.shared.bootDevice(udid: device.udid)
         }
 
-        // Open Simulator.app
-        _ = try await SimCtlClient.run("/usr/bin/open", arguments: ["-a", "Simulator.app"])
+        // Open the simulator GUI (Simulator.app, or DeviceHub on Xcode 27+)
+        try await SimCtlClient.openSimulatorGUI()
 
         // Create session
         let dir = ensureSessionDir()

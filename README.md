@@ -242,6 +242,7 @@ echo "All checks passed"
 | `IOSEF_DEFAULT_OUTPUT_DIR` | `~/Downloads` | Default directory for screenshots |
 | `IOSEF_TIMEOUT` | — | Override default timeout (seconds) |
 | `IOSEF_FILTERED_TOOLS` | (none) | Comma-separated MCP tool names to hide |
+| `IOSEF_AXP_DUMP` | (unset) | Log raw AXP request/response traffic to stderr (debugging) |
 
 State is stored in `~/.iosef/state.json` (global) or `./.iosef/state.json` (local). See [Directory-scoped sessions](#directory-scoped-sessions).
 
