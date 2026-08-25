@@ -28,6 +28,13 @@ public enum PrivateFrameworkError: Error, LocalizedError {
     }
 }
 
+/// Outcome of handing an Indigo message to the simulator's HID client.
+public enum HIDSendResult: Sendable, Equatable {
+    case delivered
+    case failed(String)
+    case timedOut
+}
+
 /// Bridges to Apple's private SimulatorKit and CoreSimulator frameworks via dlopen/dlsym
 /// and ObjC runtime. Loads once and caches all resolved symbols.
 public final class PrivateFrameworkBridge: @unchecked Sendable {
@@ -572,8 +579,9 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
     }
 
     /// Sends an IndigoMessage to the HID client, waiting for delivery confirmation.
-    /// Matches idb's behavior of waiting for the completion callback before returning.
-    public func sendMessage(_ data: Data, to client: AnyObject) {
+    /// Matches idb's behavior of waiting for the completion callback before returning,
+    /// and of surfacing the error it reports.
+    public func sendMessage(_ data: Data, to client: AnyObject) -> HIDSendResult {
         let size = data.count
         let buffer = malloc(size)!
         data.copyBytes(to: buffer.assumingMemoryBound(to: UInt8.self), count: size)
@@ -582,7 +590,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
         guard let method = class_getInstanceMethod(type(of: client), sel) else {
             free(buffer)
-            return
+            return .failed("sendWithMessage:freeWhenDone:completionQueue:completion: not found")
         }
 
         let imp = method_getImplementation(method)
@@ -592,13 +600,24 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         let semaphore = DispatchSemaphore(value: 0)
         let queue = DispatchQueue.global(qos: .userInteractive)
 
+        var sendError: NSError?
+
         typealias CompletionBlock = @convention(block) (NSError?) -> Void
-        let completion: CompletionBlock = { _ in semaphore.signal() }
+        let completion: CompletionBlock = { error in
+            sendError = error
+            semaphore.signal()
+        }
 
         typealias SendFn = @convention(c) (AnyObject, Selector, UnsafeMutableRawPointer, ObjCBool, DispatchQueue, CompletionBlock?) -> Void
         let send = unsafeBitCast(imp, to: SendFn.self)
         send(client, sel, buffer, ObjCBool(true), queue, completion)
 
-        _ = semaphore.wait(timeout: .now() + 5.0)
+        if semaphore.wait(timeout: .now() + 5.0) == .timedOut {
+            return .timedOut
+        }
+        if let sendError {
+            return .failed(sendError.localizedDescription)
+        }
+        return .delivered
     }
 }

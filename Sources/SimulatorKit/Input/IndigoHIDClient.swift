@@ -6,10 +6,21 @@ import IndigoCTypes
 /// via Apple's private IndigoHID mechanism. Does not move the macOS mouse cursor.
 public final class IndigoHIDClient: @unchecked Sendable {
     private let device: AnyObject      // SimDevice
-    private let client: AnyObject      // SimDeviceLegacyHIDClient
     public let screenSize: CGSize      // pixel dimensions (e.g., 1179x2556)
     public let screenScale: Float      // e.g., 3.0
     private let bridge: PrivateFrameworkBridge
+
+    /// SimDeviceLegacyHIDClient. Mutable because a simulator reboot tears down the
+    /// sim-side HID endpoint, leaving this object permanently unable to deliver;
+    /// `send(_:)` swaps in a fresh one when that happens.
+    private var client: AnyObject
+    private let lock = NSLock()
+    private var lastReconnectAttempt: ContinuousClock.Instant?
+
+    /// Minimum spacing between reconnect attempts. A device that is shut down (rather
+    /// than rebooted) fails every send, and recreating the client costs ~100ms, so a
+    /// 20-step swipe would otherwise pay for 20 doomed reconnects.
+    private static let reconnectCooldown: Duration = .seconds(1)
 
     public init(udid: String) throws {
         self.bridge = PrivateFrameworkBridge.shared
@@ -30,6 +41,53 @@ public final class IndigoHIDClient: @unchecked Sendable {
         logDiagnostic("deinit — releasing HID client", prefix: "IndigoHIDClient")
     }
 
+    // MARK: - Message delivery
+
+    /// Delivers one Indigo message, reconnecting once if the simulator tore down the
+    /// HID endpoint underneath us (e.g. `simctl shutdown` + `boot` during a long-lived
+    /// MCP session). Without this, every later event posts into a dead Mach port and
+    /// silently does nothing, forever.
+    ///
+    /// The completion handler is the only usable staleness signal. It reports
+    /// "Mach port invalid, device disconnected" as soon as the sim-side endpoint is
+    /// gone, whereas `SimDevice.bootGeneration` keeps reading the pre-reboot value
+    /// in this process and `-[SimDeviceLegacyHIDClient resetHIDSession]` does not
+    /// revive the dead client. Building a new client against the same SimDevice does.
+    private func send(_ data: Data) {
+        let current = lock.withLock { client }
+        if bridge.sendMessage(data, to: current) == .delivered { return }
+
+        guard let reconnected = reconnect(replacing: current) else { return }
+
+        let result = bridge.sendMessage(data, to: reconnected)
+        if result != .delivered {
+            logDiagnostic("send failed after reconnect: \(result)", prefix: "IndigoHIDClient")
+        }
+    }
+
+    /// Replaces the underlying HID client. Returns the client to retry with, or nil if
+    /// the retry should be skipped (reconnect failed, or one was attempted too recently).
+    private func reconnect(replacing stale: AnyObject) -> AnyObject? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        // Another thread already reconnected — retry on theirs rather than churning.
+        if client !== stale { return client }
+
+        let now = ContinuousClock.now
+        if let last = lastReconnectAttempt, now - last < Self.reconnectCooldown { return nil }
+        lastReconnectAttempt = now
+
+        do {
+            client = try bridge.createHIDClient(device: device)
+            logDiagnostic("HID session was stale — reconnected", prefix: "IndigoHIDClient")
+            return client
+        } catch {
+            logDiagnostic("HID session was stale — reconnect failed: \(error)", prefix: "IndigoHIDClient")
+            return nil
+        }
+    }
+
     // MARK: - Public API
 
     /// Sends a tap at the given iOS point coordinates.
@@ -38,9 +96,9 @@ public final class IndigoHIDClient: @unchecked Sendable {
         let downData = buildTouchMessage(xRatio: ratio.xRatio, yRatio: ratio.yRatio, direction: IndigoDirection.down)
         let upData = buildTouchMessage(xRatio: ratio.xRatio, yRatio: ratio.yRatio, direction: IndigoDirection.up)
 
-        bridge.sendMessage(downData, to: client)
+        send(downData)
         usleep(30_000)  // 30ms hold
-        bridge.sendMessage(upData, to: client)
+        send(upData)
     }
 
     /// Sends a long press at the given iOS point coordinates.
@@ -49,9 +107,9 @@ public final class IndigoHIDClient: @unchecked Sendable {
         let downData = buildTouchMessage(xRatio: ratio.xRatio, yRatio: ratio.yRatio, direction: IndigoDirection.down)
         let upData = buildTouchMessage(xRatio: ratio.xRatio, yRatio: ratio.yRatio, direction: IndigoDirection.up)
 
-        bridge.sendMessage(downData, to: client)
+        send(downData)
         usleep(UInt32(duration * 1_000_000))
-        bridge.sendMessage(upData, to: client)
+        send(upData)
     }
 
     /// Sends a swipe gesture from start to end iOS point coordinates.
@@ -70,7 +128,7 @@ public final class IndigoHIDClient: @unchecked Sendable {
 
         // Touch down at start
         let downData = buildTouchMessage(xRatio: startRatio.xRatio, yRatio: startRatio.yRatio, direction: IndigoDirection.down)
-        bridge.sendMessage(downData, to: client)
+        send(downData)
 
         // Drag through intermediate points
         let dxRatio = (endRatio.xRatio - startRatio.xRatio) / Double(stepCount)
@@ -82,14 +140,14 @@ public final class IndigoHIDClient: @unchecked Sendable {
                 let yr = startRatio.yRatio + dyRatio * Double(i)
                 // Drag events use "down" direction (finger still touching)
                 let dragData = buildTouchMessage(xRatio: xr, yRatio: yr, direction: IndigoDirection.down)
-                bridge.sendMessage(dragData, to: client)
+                send(dragData)
                 usleep(stepDelayMicros)
             }
         }
 
         // Touch up at end
         let upData = buildTouchMessage(xRatio: endRatio.xRatio, yRatio: endRatio.yRatio, direction: IndigoDirection.up)
-        bridge.sendMessage(upData, to: client)
+        send(upData)
     }
 
     /// Sends a hardware button press (home, lock, side, etc.).
@@ -130,7 +188,7 @@ public final class IndigoHIDClient: @unchecked Sendable {
     private func sendIndigoMessage(_ msg: UnsafeMutablePointer<IndigoMessage>) {
         let data = Data(bytes: msg, count: malloc_size(msg))
         free(msg)
-        bridge.sendMessage(data, to: client)
+        send(data)
     }
 
     /// Maps an ASCII character to its USB HID keycode and whether Shift is needed.
