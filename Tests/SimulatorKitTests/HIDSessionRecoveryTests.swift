@@ -1,3 +1,4 @@
+#if RebootTests
 import Testing
 import Foundation
 @testable import SimulatorKit
@@ -6,37 +7,69 @@ import Foundation
 /// dead Mach port after the simulator rebooted, so every later tap/swipe silently did
 /// nothing while still reporting success.
 ///
-/// Opt-in, because it reboots a simulator (~40s) — too disruptive for a plain
-/// `swift test`. Run with:
+/// Compiled in only with the `RebootTests` package trait (see Package.swift): the test
+/// creates, boots, reboots, and deletes its own throwaway simulator (~2 min), which is
+/// too slow for a plain `swift test`. Run it with:
 ///
-///     IOSEF_REBOOT_TESTS=1 swift test --filter HIDSessionRecoveryTests
-///
-/// It reboots the first booted device; set `IOSEF_REBOOT_TEST_UDID` to pick a specific
-/// one when several simulators are running.
+///     scripts/test-reboot-recovery.sh
 @Suite("HID session recovery", .tags(.requiresSimulator), .serialized)
 struct HIDSessionRecoveryTests {
 
-    static let isEnabled = ProcessInfo.processInfo.environment["IOSEF_REBOOT_TESTS"] == "1"
-
-    @Test("Cached client still drives the simulator after a reboot", .enabled(if: isEnabled))
+    @Test("Cached client still drives the simulator after a reboot")
     func clientRecoversAfterReboot() async throws {
-        let udid = try ProcessInfo.processInfo.environment["IOSEF_REBOOT_TEST_UDID"]
-            ?? SimCtlClient.getBootedDevice().udid
-        let client = try IndigoHIDClient(udid: udid)
+        try await withThrowawaySimulator { udid in
+            let client = try IndigoHIDClient(udid: udid)
 
-        try await launchSettings(udid: udid)
-        #expect(try await swipeChangesScreen(client, udid: udid),
-                "baseline: swiping should scroll Settings before the reboot")
+            try await launchSettings(udid: udid)
+            #expect(try await swipeChangesScreen(client, udid: udid),
+                    "baseline: swiping should scroll Settings before the reboot")
 
-        try await reboot(udid: udid)
-        try await launchSettings(udid: udid)
+            try await reboot(udid: udid)
+            try await launchSettings(udid: udid)
 
-        // The same client instance, across a boot that tore down the HID endpoint.
-        #expect(try await swipeChangesScreen(client, udid: udid),
-                "the cached client should reconnect and keep delivering after a reboot")
+            // The same client instance, across a boot that tore down the HID endpoint.
+            #expect(try await swipeChangesScreen(client, udid: udid),
+                    "the cached client should reconnect and keep delivering after a reboot")
+        }
     }
 
-    // MARK: - Helpers
+    // MARK: - Simulator lifecycle
+
+    /// Creates and boots a dedicated simulator (latest iPhone device type on the latest
+    /// iOS runtime) and deletes it afterwards, pass or fail — the test never touches a
+    /// simulator someone is actually using.
+    private func withThrowawaySimulator(_ body: (String) async throws -> Void) async throws {
+        let runtime = try await SimCtlClient.getLatestRuntime()
+        let deviceType = try await SimCtlClient.getLatestDeviceType(forRuntime: runtime)
+        let udid = try await SimCtlClient.createSimulator(
+            name: "iosef-reboot-test", deviceType: deviceType, runtime: runtime)
+        do {
+            try await boot(udid: udid)
+            try await body(udid)
+        } catch {
+            try? await SimCtlClient.shutdownSimulator(udid: udid)
+            try? await SimCtlClient.deleteSimulator(udid: udid)
+            throw error
+        }
+        try await SimCtlClient.shutdownSimulator(udid: udid)
+        try await SimCtlClient.deleteSimulator(udid: udid)
+    }
+
+    private func boot(udid: String) async throws {
+        try PrivateFrameworkBridge.shared.ensureLoaded()
+        try PrivateFrameworkBridge.shared.bootDevice(udid: udid)
+        _ = try? await SimCtlClient.run("/usr/bin/xcrun", arguments: ["simctl", "bootstatus", udid, "-b"],
+                                        timeout: .seconds(120))
+        try await Task.sleep(for: .seconds(3))
+    }
+
+    private func reboot(udid: String) async throws {
+        try await SimCtlClient.shutdownSimulator(udid: udid)
+        try await Task.sleep(for: .seconds(3))
+        try await boot(udid: udid)
+    }
+
+    // MARK: - Oracle helpers
 
     /// Settings is a long scrollable list on every device, which makes a swipe a
     /// content-agnostic oracle: if HID events land, the framebuffer changes.
@@ -59,13 +92,5 @@ struct HIDSessionRecoveryTests {
     private func screen(udid: String, scale: Float) throws -> String {
         try ScreenCapture.captureSimulator(udid: udid, screenScale: scale).base64
     }
-
-    private func reboot(udid: String) async throws {
-        try await SimCtlClient.shutdownSimulator(udid: udid)
-        try await Task.sleep(for: .seconds(3))
-        try PrivateFrameworkBridge.shared.bootDevice(udid: udid)
-        _ = try? await SimCtlClient.run("/usr/bin/xcrun", arguments: ["simctl", "bootstatus", udid, "-b"],
-                                        timeout: .seconds(120))
-        try await Task.sleep(for: .seconds(3))
-    }
 }
+#endif
