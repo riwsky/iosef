@@ -79,14 +79,19 @@ public struct TreeNode: Codable, Sendable {
 public enum TreeSerializer {
 
     /// Serializes a tree node array to a pretty-printed JSON string.
+    /// JSONEncoder's synthesized Codable descent recurses per tree level, so run
+    /// it on the large-stack thread — deep system trees overflow the 512 KB
+    /// cooperative stack (see LargeStackThread).
     public static func toJSON(_ nodes: [TreeNode]) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(nodes)
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw SerializerError.encodingFailed
+        try LargeStackThread.run {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(nodes)
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw SerializerError.encodingFailed
+            }
+            return json
         }
-        return json
     }
 
     /// Serializes a single tree node to a pretty-printed JSON string.
@@ -104,21 +109,25 @@ public enum TreeSerializer {
     ]
 
     /// Serializes a tree node array to an indented plain-text tree optimized for LLM agents.
+    /// Runs on the large-stack thread: `appendMarkdown` recurses per tree level
+    /// and deep system trees overflow the 512 KB cooperative stack (see
+    /// LargeStackThread).
     /// - Parameter maxDepth: Maximum recursion depth (nil for unlimited). Depth 0 = root nodes only.
     public static func toMarkdown(_ nodes: [TreeNode], maxDepth: Int? = nil) -> String {
-        var lines: [String] = []
-        for node in nodes {
-            appendMarkdown(node: node, indent: 0, depth: 0, maxDepth: maxDepth, lines: &lines)
+        // force-try is safe: the body only builds strings and never throws.
+        try! LargeStackThread.run {
+            var lines: [String] = []
+            for node in nodes {
+                appendMarkdown(node: node, indent: 0, depth: 0, maxDepth: maxDepth, lines: &lines)
+            }
+            return lines.joined(separator: "\n")
         }
-        return lines.joined(separator: "\n")
     }
 
     /// Serializes a single tree node to an indented plain-text tree.
     /// - Parameter maxDepth: Maximum recursion depth (nil for unlimited). Depth 0 = this node only.
     public static func toMarkdown(_ node: TreeNode, maxDepth: Int? = nil) -> String {
-        var lines: [String] = []
-        appendMarkdown(node: node, indent: 0, depth: 0, maxDepth: maxDepth, lines: &lines)
-        return lines.joined(separator: "\n")
+        toMarkdown([node], maxDepth: maxDepth)
     }
 
     private static func appendMarkdown(node: TreeNode, indent: Int, depth: Int, maxDepth: Int?, lines: inout [String]) {

@@ -69,6 +69,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     /// Returns the full accessibility tree from the frontmost application as an array of TreeNodes.
     /// The entire operation (including recursive tree walk) is bounded by `timeout`.
     public func accessibilityElements(timeout: Duration = .seconds(10)) throws -> [TreeNode] {
+        try LargeStackThread.run { try self.accessibilityElementsImpl(timeout: timeout) }
+    }
+
+    private func accessibilityElementsImpl(timeout: Duration) throws -> [TreeNode] {
         let start = ContinuousClock.now
         let deadline = start.advanced(by: timeout)
         let timeoutSeconds = timeout.totalSeconds
@@ -208,6 +212,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     /// Returns the accessibility element at the given iOS point coordinates.
     /// The entire operation is bounded by `timeout`.
     public func accessibilityElementAtPoint(x: Double, y: Double, timeout: Duration = .seconds(10)) throws -> TreeNode {
+        try LargeStackThread.run { try self.accessibilityElementAtPointImpl(x: x, y: y, timeout: timeout) }
+    }
+
+    private func accessibilityElementAtPointImpl(x: Double, y: Double, timeout: Duration) throws -> TreeNode {
         let start = ContinuousClock.now
         let deadline = start.advanced(by: timeout)
         let timeoutSeconds = timeout.totalSeconds
@@ -362,7 +370,13 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
     /// Recursively serializes an AXPMacPlatformElement into a TreeNode.
     /// Checks `deadline` before each child traversal to bound total operation time.
-    private func serializeElement(_ element: AnyObject, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int) throws -> TreeNode {
+    /// - Parameter ancestors: identities of the elements on the current root-to-parent
+    ///   path, used to break reference cycles. SpringBoard's Dynamic Island element
+    ///   lists **itself** in its own `accessibilityChildren` (pointer-identical every
+    ///   level), which otherwise materializes as a ~4000-deep chain of repeated nodes
+    ///   and overflows the stack of whichever thread walks, searches, encodes, or
+    ///   even deallocates the tree.
+    private func serializeElement(_ element: AnyObject, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int, ancestors: Set<ObjectIdentifier> = []) throws -> TreeNode {
         elementCount += 1
         // Extract properties via KVC / selectors
         let role = stringProperty(element, "accessibilityRole")
@@ -411,14 +425,20 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         // Children
         var childNodes: [TreeNode] = []
         if let children = (element as AnyObject).value(forKey: "accessibilityChildren") as? [AnyObject], !children.isEmpty {
+            var path = ancestors
+            path.insert(ObjectIdentifier(element))
             for child in children {
                 try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
+                guard !path.contains(ObjectIdentifier(child)) else {
+                    logDiagnostic("cycle: \(role ?? "?") \"\(label ?? "")\" lists an ancestor (or itself) as a child — skipping")
+                    continue
+                }
                 let node: TreeNode = try autoreleasepool {
                     // Set bridgeDelegateToken on each child's translation
                     if let translation = (child as AnyObject).value(forKey: "translation") as AnyObject? {
                         setBridgeToken(token, on: translation)
                     }
-                    return try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount)
+                    return try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount, ancestors: path)
                 }
                 childNodes.append(node)
             }
