@@ -16,11 +16,25 @@ import Foundation
 /// until relaunched, hence the stderr hint.
 enum SimulatorAccessibilityEnabler {
 
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var checkedUDIDs: Set<String> = []
+
     /// Checks the device's accessibility defaults and enables them if needed.
     /// Returns true when the defaults were just written (a relaunch of the
     /// app under test is then required for it to serve accessibility data).
+    ///
+    /// Memoized per UDID for the process lifetime: this runs in every
+    /// `AXPAccessibilityBridge` init, and the `simctl spawn defaults read`
+    /// subprocess is too slow for that hot path. The defaults persist per
+    /// device, so one check per process suffices (an `simctl erase` mid-process
+    /// needs a process restart to re-trigger enablement).
     @discardableResult
     static func ensureEnabled(udid: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if checkedUDIDs.contains(udid) { return false }
+        checkedUDIDs.insert(udid)
+
         let read = runSimctl(["spawn", udid, "defaults", "read",
                               "com.apple.Accessibility", "ApplicationAccessibilityEnabled"])
         if read.status == 0, read.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
