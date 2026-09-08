@@ -2,8 +2,6 @@
 
 A Swift CLI and [MCP server](https://modelcontextprotocol.io/) for interacting with the iOS Simulator that's optimized for agentic usage. Tap, swipe, type, screenshot, and read the accessibility tree, with a consistent coordinate space and simplified commands.
 
-## Architecture
-
 ```
 iosef start --local --device "X"   →  creates/boots simulator, saves state to .iosef/state.json
 iosef tap / type / view            →  reads state.json, performs action, exits
@@ -38,8 +36,6 @@ swift build -c release
 # or
 ./scripts/build.sh   # builds + installs to ~/.local/bin/iosef
 ```
-
-Compiled binaries are available [on the releases page](https://github.com/riwsky/iosef/releases).
 
 Building from source requires Swift 6.1+, macOS 13+, and Xcode with an iOS simulator runtime installed.
 
