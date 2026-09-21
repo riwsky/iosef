@@ -15,7 +15,8 @@ public enum PrivateFrameworkError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .frameworkNotFound(let path):
-            return "Could not load framework at \(path). Is Xcode installed?"
+            return "Could not load framework at \(path). Is Xcode installed? "
+                + "(Using developer dir \(DeveloperDir.resolved); set DEVELOPER_DIR or run `xcode-select -s` to use a different Xcode.)"
         case .symbolNotFound(let symbol, let framework):
             return "Could not find symbol '\(symbol)' in \(framework)"
         case .classNotFound(let name):
@@ -68,8 +69,12 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     // MARK: - Loading
 
-    private static let simulatorKitPath =
-        "/Applications/Xcode.app/Contents/Developer/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"
+    /// SimulatorKit locations relative to the developer dir. Xcode 27 moved it from
+    /// Developer/Library/PrivateFrameworks to the bundle's SharedFrameworks.
+    private static let simulatorKitPaths = [
+        "/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit",
+        "/../SharedFrameworks/SimulatorKit.framework/SimulatorKit",
+    ].map { DeveloperDir.resolved + $0 }
     private static let coreSimulatorPath =
         "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator"
 
@@ -84,8 +89,8 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         }
         coreSimulatorHandle = csHandle
 
-        guard let skHandle = dlopen(Self.simulatorKitPath, RTLD_LAZY) else {
-            throw PrivateFrameworkError.frameworkNotFound(Self.simulatorKitPath)
+        guard let skHandle = Self.simulatorKitPaths.lazy.compactMap({ dlopen($0, RTLD_LAZY) }).first else {
+            throw PrivateFrameworkError.frameworkNotFound(Self.simulatorKitPaths.joined(separator: " or "))
         }
         simulatorKitHandle = skHandle
 
@@ -134,7 +139,7 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         let contextImp = method_getImplementation(contextMethod)
         let getContext = unsafeBitCast(contextImp, to: ContextFn.self)
 
-        let developerDir = "/Applications/Xcode.app/Contents/Developer" as NSString
+        let developerDir = DeveloperDir.resolved as NSString
         var contextError: NSError?
         guard let ctx = getContext(contextClass, contextSel, developerDir, &contextError) else {
             throw PrivateFrameworkError.clientCreationFailed(

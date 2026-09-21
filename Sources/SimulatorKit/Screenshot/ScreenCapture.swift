@@ -18,6 +18,7 @@ public enum ScreenCapture {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         process.arguments = ["-f", "simctl"]
+        process.environment = DeveloperDir.childEnvironment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -188,6 +189,8 @@ public enum ScreenCapture {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
             process.arguments = ["simctl", "io", udid, "screenshot", "--type=tiff", "-"]
         }
+
+        process.environment = DeveloperDir.childEnvironment
 
         let pipe = Pipe()
         process.standardOutput = pipe
