@@ -65,6 +65,8 @@ func setupGlobals() {
        let timeoutSecs = Double(timeoutStr), timeoutSecs > 0 {
         SimCtlClient.defaultTimeout = .seconds(Int64(timeoutSecs))
     }
+
+    logDiagnostic("developer dir: \(DeveloperDir.resolved)", prefix: "Setup")
 }
 
 // MARK: - Common CLI options
@@ -226,6 +228,8 @@ struct SimulatorCLI: AsyncParsableCommand {
               IOSEF_DEFAULT_OUTPUT_DIR      Default directory for screenshots.
               IOSEF_TIMEOUT                 Override default timeout (seconds).
               IOSEF_FILTERED_TOOLS          Comma-separated tools to hide from MCP.
+              DEVELOPER_DIR                 Xcode to use (e.g. /Applications/Xcode-beta.app).
+                                            Defaults to the `xcode-select` selection.
 
             Example — selector-based (preferred):
               # Tap a button by name
@@ -614,6 +618,7 @@ struct Status: AsyncParsableCommand {
                 info["state"] = device.state
             }
             info["session"] = sessionLabel
+            info["developer_dir"] = DeveloperDir.resolved
             let data = try JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys])
             print(String(data: data, encoding: .utf8)!)
         } else {
@@ -625,6 +630,7 @@ struct Status: AsyncParsableCommand {
                 print("Device:  (none)")
             }
             print("Session: \(sessionLabel)")
+            print("Xcode:   \(DeveloperDir.resolved)")
         }
     }
 }

@@ -239,6 +239,18 @@ echo "All checks passed"
 | `IOSEF_TIMEOUT` | — | Override default timeout (seconds) |
 | `IOSEF_FILTERED_TOOLS` | (none) | Comma-separated MCP tool names to hide |
 | `IOSEF_AXP_DUMP` | (unset) | Log raw AXP request/response traffic to stderr (debugging) |
+| `DEVELOPER_DIR` | `xcode-select -p` | Xcode to use, e.g. `/Applications/Xcode-beta.app` (see below) |
+
+### Using a different Xcode
+
+iosef loads Xcode's private simulator frameworks, and picks the Xcode the same way `xcrun` does: the `DEVELOPER_DIR` environment variable if set, otherwise the `xcode-select` selection, otherwise `/Applications/Xcode.app`. Either a bundle path or its `Contents/Developer` directory works:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode-beta.app iosef start
+iosef status   # the "Xcode:" line (developer_dir in --json) shows which one is in use
+```
+
+For the MCP server, set `DEVELOPER_DIR` in the server's `env` config. Child `xcrun simctl` processes are pinned to the same Xcode.
 
 State is stored in `~/.iosef/state.json` (global) or `./.iosef/state.json` (local). See [Directory-scoped sessions](#directory-scoped-sessions).
 

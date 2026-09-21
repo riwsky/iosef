@@ -56,6 +56,7 @@ enum SimulatorAccessibilityEnabler {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         process.arguments = ["simctl"] + arguments
+        process.environment = DeveloperDir.childEnvironment
         let out = Pipe()
         process.standardOutput = out
         process.standardError = Pipe()

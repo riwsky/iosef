@@ -21,6 +21,7 @@ public enum SimCtlClient {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
         process.arguments = arguments
+        process.environment = DeveloperDir.childEnvironment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -243,12 +244,15 @@ public enum SimCtlClient {
     /// Opens the simulator GUI. Xcode 26 and earlier ship Simulator.app; Xcode 27
     /// replaced it with DeviceHub.app inside the Xcode bundle, so try each in turn.
     public static func openSimulatorGUI() async throws {
-        var candidates = ["Simulator.app"]
-        if let devDir = try? await run("/usr/bin/xcode-select", arguments: ["-p"]).stdout,
-           devDir.hasSuffix("/Contents/Developer") {
+        // Prefer the apps bundled with the resolved Xcode so the GUI matches the
+        // frameworks we loaded; bare "Simulator.app" lets LaunchServices pick.
+        let devDir = DeveloperDir.resolved
+        var candidates = ["\(devDir)/Applications/Simulator.app"]
+        if devDir.hasSuffix("/Contents/Developer") {
             let xcodeBundle = String(devDir.dropLast("/Contents/Developer".count))
             candidates.append("\(xcodeBundle)/Contents/Applications/DeviceHub.app")
         }
+        candidates = candidates.filter { FileManager.default.fileExists(atPath: $0) } + ["Simulator.app"]
         var lastError: Error?
         for app in candidates {
             do {
