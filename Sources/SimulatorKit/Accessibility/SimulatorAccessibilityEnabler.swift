@@ -52,6 +52,22 @@ enum SimulatorAccessibilityEnabler {
         return true
     }
 
+    nonisolated(unsafe) private static var restartedBridgeUDIDs: Set<String> = []
+
+    /// Restarts the simulator's CoreSimulatorBridge, which serves frontmost-application
+    /// lookups and doesn't notice accessibility being enabled after it started. At most once
+    /// per UDID per process, so a simulator that genuinely has no frontmost app doesn't pay
+    /// for a restart on every read. Returns true if a restart was performed.
+    static func restartBridgeOnce(udid: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard restartedBridgeUDIDs.insert(udid).inserted else { return false }
+
+        let stop = runSimctl(["spawn", udid, "launchctl", "stop", "com.apple.CoreSimulator.bridge"])
+        logDiagnostic("restarted com.apple.CoreSimulator.bridge on \(udid) (status \(stop.status))", prefix: "AXEnabler")
+        return stop.status == 0
+    }
+
     private static func runSimctl(_ arguments: [String]) -> (status: Int32, stdout: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
