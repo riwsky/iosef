@@ -3,7 +3,7 @@ import Testing
 import Foundation
 @testable import SimulatorKit
 
-/// Regression coverage for issue #8: a long-lived `IndigoHIDClient` used to post into a
+/// Regression coverage for issue #8: a long-lived `SimulatorHIDClient` used to post into a
 /// dead Mach port after the simulator rebooted, so every later tap/swipe silently did
 /// nothing while still reporting success.
 ///
@@ -18,7 +18,7 @@ struct HIDSessionRecoveryTests {
     @Test("Cached client still drives the simulator after a reboot")
     func clientRecoversAfterReboot() async throws {
         try await withThrowawaySimulator { udid in
-            let client = try IndigoHIDClient(udid: udid)
+            let client = try SimulatorHIDClient(udid: udid)
 
             try await launchSettings(udid: udid)
             #expect(try await swipeChangesScreen(client, udid: udid),
@@ -81,7 +81,7 @@ struct HIDSessionRecoveryTests {
         try await Task.sleep(for: .seconds(3))
     }
 
-    private func swipeChangesScreen(_ client: IndigoHIDClient, udid: String) async throws -> Bool {
+    private func swipeChangesScreen(_ client: SimulatorHIDClient, udid: String) async throws -> Bool {
         let before = try screen(udid: udid, scale: client.screenScale)
         client.swipe(startX: 200, startY: 600, endX: 200, endY: 250, steps: 12)
         try await Task.sleep(for: .seconds(2))
