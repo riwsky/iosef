@@ -55,8 +55,12 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
 
     // MARK: - Resolved function pointers from SimulatorKit
 
+    /// IndigoHIDMessageForMouseNSEvent(CGPoint *, CGPoint *, IndigoHIDTarget, NSEventType, NSSize, IndigoHIDEdge).
+    /// The builder divides the point by the NSSize to get the contact's ratios, so the size
+    /// must be passed explicitly: it travels in floating-point registers, and omitting it
+    /// from the signature hands the builder whatever garbage they happen to hold.
     private(set) var messageForMouseNSEvent: (
-        @convention(c) (UnsafeMutablePointer<CGPoint>, UnsafeMutableRawPointer?, Int32, Int32, Bool) -> UnsafeMutablePointer<IndigoMessage>
+        @convention(c) (UnsafeMutablePointer<CGPoint>, UnsafeMutablePointer<CGPoint>?, UInt32, UInt, CGSize, UInt32) -> UnsafeMutablePointer<IndigoMessage>
     )?
 
     private(set) var messageForButton: (

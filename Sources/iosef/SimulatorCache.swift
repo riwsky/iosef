@@ -16,7 +16,7 @@ actor SimulatorCache {
 
     private var deviceCache: DeviceCache?
     private var axpBridges: [String: AXPAccessibilityBridge] = [:]
-    private var hidClients: [String: IndigoHIDClient] = [:]
+    private var hidClients: [String: SimulatorHIDClient] = [:]
 
     private let deviceTTL: Duration = .seconds(30)
 
@@ -101,15 +101,15 @@ actor SimulatorCache {
         return bridge.screenScale(forDevice: device)
     }
 
-    /// Gets or creates an IndigoHIDClient for the given UDID.
+    /// Gets or creates an SimulatorHIDClient for the given UDID.
     /// Clients are cached indefinitely (they hold a SimDevice reference); a client whose
     /// HID session dies under it — a simulator reboot, say — reconnects itself on the
     /// next event, so a cache entry never goes permanently stale.
-    func getHIDClient(udid: String) throws -> IndigoHIDClient {
+    func getHIDClient(udid: String) throws -> SimulatorHIDClient {
         if let cached = hidClients[udid] {
             return cached
         }
-        let client = try IndigoHIDClient(udid: udid)
+        let client = try SimulatorHIDClient(udid: udid)
         hidClients[udid] = client
         return client
     }

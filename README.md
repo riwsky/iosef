@@ -239,6 +239,7 @@ echo "All checks passed"
 | `IOSEF_TIMEOUT` | — | Override default timeout (seconds) |
 | `IOSEF_FILTERED_TOOLS` | (none) | Comma-separated MCP tool names to hide |
 | `IOSEF_AXP_DUMP` | (unset) | Log raw AXP request/response traffic to stderr (debugging) |
+| `IOSEF_HID_TRANSPORT` | (auto) | Set to `indigo` to force the legacy HID path instead of `dtuhidd` on Xcode 27+ (debugging) |
 | `DEVELOPER_DIR` | `xcode-select -p` | Xcode to use, e.g. `/Applications/Xcode-beta.app` (see below) |
 
 ### Using a different Xcode

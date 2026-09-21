@@ -1,11 +1,17 @@
+import Foundation
 import Testing
 @testable import SimulatorKit
 
-@Suite("IndigoHIDClient Tests", .tags(.requiresSimulator))
-struct IndigoHIDClientTests {
+@Suite("SimulatorHIDClient Tests", .tags(.requiresSimulator))
+struct SimulatorHIDClientTests {
 
     /// Helper: gets a booted simulator UDID via simctl, or skips.
+    /// These tests send real touches, and "a booted simulator" is an arbitrary pick when
+    /// several are running. Set IOSEF_TEST_UDID to keep them off simulators you care about.
     static func bootedUDID() async throws -> String {
+        if let pinned = ProcessInfo.processInfo.environment["IOSEF_TEST_UDID"], !pinned.isEmpty {
+            return pinned
+        }
         let device = try await SimCtlClient.getBootedDevice()
         return device.udid
     }
@@ -13,7 +19,7 @@ struct IndigoHIDClientTests {
     @Test("Client creation with booted simulator")
     func createClient() async throws {
         let udid = try await Self.bootedUDID()
-        let client = try IndigoHIDClient(udid: udid)
+        let client = try SimulatorHIDClient(udid: udid)
         #expect(client.screenSize.width > 0)
         #expect(client.screenSize.height > 0)
         #expect(client.screenScale >= 1.0)
@@ -22,7 +28,7 @@ struct IndigoHIDClientTests {
     @Test("Screen size is reasonable for the booted device")
     func screenSizeReasonable() async throws {
         let udid = try await Self.bootedUDID()
-        let client = try IndigoHIDClient(udid: udid)
+        let client = try SimulatorHIDClient(udid: udid)
         // Below this would mean we got points instead of pixels (or zero).
         #expect(client.screenSize.width >= 250)
         #expect(client.screenSize.height >= 300)
@@ -31,7 +37,7 @@ struct IndigoHIDClientTests {
     @Test("Tap sends without error")
     func tapSendsWithoutError() async throws {
         let udid = try await Self.bootedUDID()
-        let client = try IndigoHIDClient(udid: udid)
+        let client = try SimulatorHIDClient(udid: udid)
         // Tap center of screen — should not crash or throw
         client.tap(x: 196, y: 426)
     }
@@ -39,7 +45,7 @@ struct IndigoHIDClientTests {
     @Test("Swipe sends without error")
     func swipeSendsWithoutError() async throws {
         let udid = try await Self.bootedUDID()
-        let client = try IndigoHIDClient(udid: udid)
+        let client = try SimulatorHIDClient(udid: udid)
         // Short swipe — should not crash or throw
         client.swipe(startX: 196, startY: 500, endX: 196, endY: 300, steps: 10)
     }

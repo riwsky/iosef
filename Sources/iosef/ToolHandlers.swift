@@ -182,7 +182,7 @@ func handleText(_ params: CallTool.Parameters) async throws -> CallTool.Result {
 }
 
 /// Resolves a selector, finds the first match, and returns its center + HID client for tapping.
-func resolveAndTapFirstMatch(from params: CallTool.Parameters) async throws -> (center: (x: Double, y: Double), hidClient: IndigoHIDClient) {
+func resolveAndTapFirstMatch(from params: CallTool.Parameters) async throws -> (center: (x: Double, y: Double), hidClient: SimulatorHIDClient) {
     let (selector, matches) = try await resolveSelector(from: params)
     guard let first = matches.first else { throw SelectorError.noMatch(selector) }
     guard let frame = first.frame else { throw SelectorError.noFrame(selector) }
