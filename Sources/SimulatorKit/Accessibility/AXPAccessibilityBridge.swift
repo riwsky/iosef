@@ -21,6 +21,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     private let translator: AnyObject   // AXPTranslator
     private let delegate: AnyObject     // AXPTranslationDispatcher (our NSObject subclass)
     private let device: AnyObject       // SimDevice
+    private let udid: String
     private let iosPointSize: CGSize    // iOS point dimensions (e.g. 402x874)
     private var cachedRootFrame: CGRect?
 
@@ -38,6 +39,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         self.translator = try bridge.getAXPTranslatorSharedInstance()
         self.device = try bridge.lookUpDevice(udid: udid)
+        self.udid = udid
 
         // Compute iOS point size = device pixels / screen scale
         let pixelSize = bridge.screenSize(forDevice: device)
@@ -88,11 +90,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
 
         try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
 
-        guard let translation = performTranslation(
-            selector: "frontmostApplicationWithDisplayId:bridgeDelegateToken:",
-            arg1: UInt32(0),
-            arg2: token
-        ) else {
+        guard let translation = frontmostApplication(token: token) else {
             throw AXPBridgeError.noTranslationObject
         }
 
@@ -282,11 +280,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             return cached
         }
 
-        guard let translation = performTranslation(
-            selector: "frontmostApplicationWithDisplayId:bridgeDelegateToken:",
-            arg1: UInt32(0),
-            arg2: token
-        ) else { return nil }
+        guard let translation = frontmostApplication(token: token) else { return nil }
 
         setBridgeToken(token, on: translation as AnyObject)
 
@@ -332,6 +326,30 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     }
 
     // MARK: - Private helpers
+
+    /// Resolves the frontmost application's translation object.
+    ///
+    /// The simulator's CoreSimulatorBridge answers this request, and it starts at boot. If
+    /// accessibility was only enabled afterwards (see `SimulatorAccessibilityEnabler`), the
+    /// bridge keeps answering nil even though point queries against the app succeed, and
+    /// relaunching the app doesn't help. Restarting the bridge does, so on a nil result we
+    /// do that once and ask again, as idb does for a SpringBoard crash.
+    private func frontmostApplication(token: String) -> AnyObject? {
+        let selector = "frontmostApplicationWithDisplayId:bridgeDelegateToken:"
+        if let translation = performTranslation(selector: selector, arg1: UInt32(0), arg2: token) {
+            return translation
+        }
+        guard SimulatorAccessibilityEnabler.restartBridgeOnce(udid: udid) else { return nil }
+
+        // launchd respawns the bridge on demand; give it a moment to come back up.
+        for _ in 0..<15 {
+            if let translation = performTranslation(selector: selector, arg1: UInt32(0), arg2: token) {
+                return translation
+            }
+            usleep(200_000)
+        }
+        return nil
+    }
 
     /// Calls [translator frontmostApplicationWithDisplayId:bridgeDelegateToken:]
     private func performTranslation(selector: String, arg1: UInt32, arg2: String) -> AnyObject? {
