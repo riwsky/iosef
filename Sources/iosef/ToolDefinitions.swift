@@ -78,6 +78,69 @@ func allTools() -> [Tool] {
         ))
     }
 
+    let gestureDuration: Value = .object([
+        "type": .string("string"),
+        "description": .string("Gesture duration in seconds (default 0.5)"),
+        "pattern": .string(#"^\d+(\.\d+)?$"#),
+    ])
+
+    if !isFiltered("pinch") {
+        var schema = selectorProperties
+        schema["x"] = .object(["type": .string("number"), "description": .string("The x-coordinate of the pinch center (coordinate mode). Must be provided with y.")])
+        schema["y"] = .object(["type": .string("number"), "description": .string("The y-coordinate of the pinch center (coordinate mode). Must be provided with x.")])
+        schema["scale"] = .object(["type": .string("number"), "description": .string("How much the distance between the fingers changes: >1 spreads them apart (zoom in), <1 pinches them together (zoom out)")])
+        schema["radius"] = .object(["type": .string("number"), "description": .string("How far each finger gets from the center at the gesture's widest, in points. Default fits the element/screen, up to 100.")])
+        schema["duration"] = gestureDuration
+        schema["udid"] = udidSchema
+        tools.append(Tool(
+            name: "pinch",
+            description: "Two-finger pinch in the iOS Simulator, for zooming maps, photos, canvases. Two modes: (1) Selector mode: finds an element by role/name/identifier and pinches about its center. (2) Coordinate mode: pass x and y for the center. Fingers move symmetrically along a horizontal line.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(schema),
+                "required": .array([.string("scale")]),
+            ])
+        ))
+    }
+
+    if !isFiltered("rotate") {
+        var schema = selectorProperties
+        schema["x"] = .object(["type": .string("number"), "description": .string("The x-coordinate of the rotation center (coordinate mode). Must be provided with y.")])
+        schema["y"] = .object(["type": .string("number"), "description": .string("The y-coordinate of the rotation center (coordinate mode). Must be provided with x.")])
+        schema["degrees"] = .object(["type": .string("number"), "description": .string("Rotation angle in degrees. Positive is clockwise.")])
+        schema["radius"] = .object(["type": .string("number"), "description": .string("Distance of each finger from the center, in points. Default fits the element/screen, up to 100.")])
+        schema["duration"] = gestureDuration
+        schema["udid"] = udidSchema
+        tools.append(Tool(
+            name: "rotate",
+            description: "Two-finger rotate in the iOS Simulator. Two modes: (1) Selector mode: finds an element by role/name/identifier and rotates about its center. (2) Coordinate mode: pass x and y for the center. Fingers sit on opposite sides of the center and sweep around it.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(schema),
+                "required": .array([.string("degrees")]),
+            ])
+        ))
+    }
+
+    if !isFiltered("touch") {
+        tools.append(Tool(
+            name: "touch",
+            description: "Play raw finger paths in the iOS Simulator: the escape hatch for gestures that tap, swipe, pinch and rotate don't cover (two-finger pan, curved drags). Each finger is a path of points in iOS points; paths are interpolated along their length and the fingers advance in lockstep.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "fingers": .object([
+                        "type": .string("string"),
+                        "description": .string(#"JSON array of 1–2 finger paths, each an array of {"x":, "y":} points, e.g. [[{"x":150,"y":400},{"x":100,"y":400}],[{"x":250,"y":400},{"x":300,"y":400}]]"#),
+                    ]),
+                    "duration": gestureDuration,
+                    "udid": udidSchema,
+                ]),
+                "required": .array([.string("fingers")]),
+            ])
+        ))
+    }
+
     if !isFiltered("view") {
         tools.append(Tool(
             name: "view",
@@ -280,6 +343,12 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleType(params)
         case "swipe":
             return try await handleUISwipe(params)
+        case "pinch":
+            return try await handlePinch(params)
+        case "rotate":
+            return try await handleRotate(params)
+        case "touch":
+            return try await handleTouch(params)
         case "view":
             return try await handleUIView(params)
         case "install_app":

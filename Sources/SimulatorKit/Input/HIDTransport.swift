@@ -24,6 +24,12 @@ protocol HIDTransport: AnyObject, Sendable {
     /// Sends one digitizer contact. `xRatio`/`yRatio` are 0...1 from the top-left.
     func sendTouch(xRatio: Double, yRatio: Double, phase: HIDTouchPhase)
 
+    /// Sends two simultaneous digitizer contacts, sharing one phase. Ratios as in `sendTouch`.
+    func sendTouches(
+        _ first: (xRatio: Double, yRatio: Double),
+        _ second: (xRatio: Double, yRatio: Double),
+        phase: HIDTouchPhase)
+
     /// Sends one keyboard event. `usage` is a USB HID keyboard usage code.
     func sendKey(usage: UInt8, down: Bool)
 

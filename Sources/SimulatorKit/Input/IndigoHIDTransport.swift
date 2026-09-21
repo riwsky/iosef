@@ -50,6 +50,38 @@ final class IndigoHIDTransport: HIDTransport, @unchecked Sendable {
         send(buildTouchMessage(xRatio: xRatio, yRatio: yRatio, direction: direction))
     }
 
+    func sendTouches(
+        _ first: (xRatio: Double, yRatio: Double),
+        _ second: (xRatio: Double, yRatio: Double),
+        phase: HIDTouchPhase
+    ) {
+        guard let fn = bridge.messageForMouseNSEvent else { return }
+        let direction = phase == .end ? IndigoDirection.up : IndigoDirection.down
+
+        // A non-NULL second point makes the builder emit a three-payload multi-touch
+        // message: finger one, a digitizer summary mirroring it, then finger two.
+        var pointOne = CGPoint(x: first.xRatio, y: first.yRatio)
+        var pointTwo = CGPoint(x: second.xRatio, y: second.yRatio)
+        let msg = fn(&pointOne, &pointTwo, 0x32, UInt(direction), CGSize(width: 1, height: 1), 0)
+
+        // Patch every contact's ratios rather than trusting the builder's normalization to
+        // reach all three. These are wire offsets: SimulatorKit strides its payloads by 0xA0,
+        // which the packed Swift `IndigoPayload` (0x90) under-counts, so they can't be
+        // derived from MemoryLayout.
+        let raw = UnsafeMutableRawPointer(msg)
+        let size = malloc_size(raw)
+        for (payloadOffset, point) in [(0x20, first), (0xC0, first), (0x160, second)] {
+            let touchOffset = payloadOffset + Self.touchOffsetInPayload
+            guard touchOffset + MemoryLayout<IndigoTouch>.size <= size else { continue }
+            let touch = raw.advanced(by: touchOffset).assumingMemoryBound(to: IndigoTouch.self)
+            touch.pointee.xRatio = point.xRatio
+            touch.pointee.yRatio = point.yRatio
+        }
+        sendIndigoMessage(msg)
+    }
+
+    private static let touchOffsetInPayload = MemoryLayout<IndigoPayload>.offset(of: \IndigoPayload.event)!
+
     func sendKey(usage: UInt8, down: Bool) {
         guard let fn = bridge.messageForKeyboardArbitrary else { return }
         sendIndigoMessage(fn(Int32(usage), down ? IndigoDirection.down : IndigoDirection.up))

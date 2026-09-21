@@ -6,7 +6,7 @@ description: >-
   the screen, tapping buttons, reading accessibility trees, finding elements
   by selector, asserting UI state, scripting multi-step test flows, installing
   and launching apps, reading simulator logs, or performing gestures like
-  drag-reorder, swipe-to-delete, and scrolling. If you're doing anything with
+  drag-reorder, swipe-to-delete, pinch-to-zoom, rotate, and scrolling. If you're doing anything with
   an iOS simulator, use this skill.
 ---
 
@@ -174,6 +174,34 @@ Useful for verifying callbacks fired, checking error messages, or debugging UI s
 
 ## Advanced Gestures
 
+### Pinch and rotate (two fingers)
+
+For anything behind a pinch or rotation recognizer: maps, photo viewers, PDF readers, zoomable canvases.
+
+```bash
+iosef pinch --name "Map" --scale 2.0              # zoom in about the element's center
+iosef pinch --x 200 --y 400 --scale 0.5           # zoom out about a point
+iosef rotate --name "Photo" --degrees 90          # clockwise
+iosef rotate --name "Photo" --degrees -45 --radius 80
+```
+
+- `--scale` is how much the distance between the fingers changes: `>1` spreads them (zoom in), `<1` pinches them (zoom out).
+- `--radius` is how far each finger gets from the center. The default fits inside the element and the screen, up to 100pt. Give a larger radius for a big scale; iosef refuses a pinch whose fingers would come within 20pt of each other, since they'd merge into one contact.
+- **The app won't read exactly what you asked for.** Expect roughly 5–10% short on scale and about 5° short on rotation (e.g. 1.8× for `--scale 2.0`, 85° for `--degrees 90`), and occasionally a few degrees over. Recognizers ignore the first few points of movement before they begin, exactly as with a real finger. Assert on a range or on the resulting UI state, never on an exact value; pinch again if you need more.
+- Slow it down with `--duration` (default 0.5s) if the app animates or loads tiles while zooming.
+
+### Arbitrary finger paths
+
+`touch` plays raw paths for gestures the other commands don't cover, such as a two-finger pan or a curved drag. Each finger is a list of points in iOS points; paths are interpolated along their length and the fingers move in lockstep, so they needn't have the same number of points.
+
+```bash
+# Two-finger pan upward
+iosef touch --fingers '[[{"x":150,"y":500},{"x":150,"y":300}],[{"x":250,"y":500},{"x":250,"y":300}]]'
+
+# One finger along an L-shaped path, over 1 second
+iosef touch --fingers '[[{"x":100,"y":300},{"x":300,"y":300},{"x":300,"y":500}]]' --duration 1
+```
+
 ### Drag-reorder (UITableView / UICollectionView)
 
 UIKit's `UIDragInteraction` requires a **long press** (~0.5s stationary, <10pt movement) before the drag lifts. `tap` with duration won't work — it releases the finger.
@@ -236,6 +264,9 @@ Then the AX tree shows: `AXImage "Reorder" (374±12, 221±7)` — use center (37
 | `type --name "N" --text "T"` | Find + tap + type |
 | `type --text "T"` | Type into focused field |
 | `swipe --x-start/y-start/x-end/y-end` | Swipe gesture |
+| `pinch --name "N" --scale F` | Two-finger pinch (zoom) |
+| `rotate --name "N" --degrees D` | Two-finger rotate |
+| `touch --fingers '<json>'` | Raw one- or two-finger paths |
 
 **Assert**
 

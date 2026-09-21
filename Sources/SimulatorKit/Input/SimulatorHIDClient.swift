@@ -73,6 +73,39 @@ public final class SimulatorHIDClient: @unchecked Sendable {
         transport.flush()
     }
 
+    /// Plays one or two finger paths (iOS points). Each path is resampled along its length
+    /// and the fingers advance in lockstep, touching down together and lifting together.
+    public func touchPaths(_ fingers: [[CGPoint]], steps: Int = 30, durationSeconds: Double = 0.5) throws {
+        guard (1...2).contains(fingers.count) else { throw TouchPathError.unsupportedFingerCount(fingers.count) }
+        if let empty = fingers.firstIndex(where: \.isEmpty) { throw TouchPathError.emptyPath(finger: empty) }
+
+        let stepCount = max(1, steps)
+        let stepDelayMicros = UInt32(max(0, durationSeconds) / Double(stepCount) * 1_000_000)
+        let sampled = fingers.map { finger in
+            TouchPaths.resample(finger, steps: stepCount).map {
+                indigoScreenRatio(x: $0.x, y: $0.y, screenSize: screenSize, screenScale: screenScale)
+            }
+        }
+
+        func send(_ index: Int, _ phase: HIDTouchPhase) {
+            if sampled.count == 2 {
+                transport.sendTouches(sampled[0][index], sampled[1][index], phase: phase)
+            } else {
+                transport.sendTouch(xRatio: sampled[0][index].xRatio, yRatio: sampled[0][index].yRatio, phase: phase)
+            }
+        }
+
+        send(0, .start)
+        for i in 1...stepCount {
+            autoreleasepool {
+                usleep(stepDelayMicros)
+                send(i, .position)
+            }
+        }
+        send(stepCount, .end)
+        transport.flush()
+    }
+
     /// Sends a hardware button press (home, lock, side, etc.).
     public func pressButton(source: UInt32, direction: Int32) {
         transport.sendButton(source: source, direction: direction)
