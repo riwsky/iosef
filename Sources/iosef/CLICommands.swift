@@ -185,9 +185,9 @@ func runToolCLI(toolName: String, arguments: [String: Value], json: Bool, output
 struct SimulatorCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "iosef",
-        abstract: "Control iOS Simulator — tap, type, swipe, inspect, and screenshot.",
+        abstract: "Control iOS Simulator — tap, type, swipe, pinch, inspect, and screenshot.",
         discussion: """
-            Tap, type, swipe, inspect accessibility elements, and capture screenshots \
+            Tap, type, swipe, pinch, inspect accessibility elements, and capture screenshots \
             in iOS Simulator. Runs as a standalone CLI or as an MCP server (stdio \
             transport) for agent integration.
 
@@ -275,6 +275,9 @@ struct SimulatorCLI: AsyncParsableCommand {
                 Tap.self,
                 UIType.self,
                 UISwipe.self,
+                Pinch.self,
+                Rotate.self,
+                Touch.self,
             ]),
             CommandGroup(name: "Selectors:", subcommands: [
                 Find.self,
@@ -837,6 +840,142 @@ struct UISwipe: AsyncParsableCommand {
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
         try await runToolCLI(toolName: "swipe", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+    }
+}
+
+/// Shared by `pinch` and `rotate`: a gesture centered on a selector match or a point.
+struct GestureCenterOptions: ParsableArguments {
+    @OptionGroup var selector: SelectorOptions
+
+    @Option(name: .long, help: "The x-coordinate of the center (coordinate mode)")
+    var x: Double?
+
+    @Option(name: .long, help: "The y-coordinate of the center (coordinate mode)")
+    var y: Double?
+
+    @Option(name: .long, help: "Finger distance from the center in points (default fits the element/screen, up to 100)")
+    var radius: Double?
+
+    @Option(name: .long, help: "Gesture duration in seconds (default 0.5)")
+    var duration: Double?
+
+    func validate() throws {
+        let hasSelector = selector.role != nil || selector.name != nil || selector.identifier != nil
+        if (x != nil) != (y != nil) {
+            throw ValidationError("Both --x and --y are required for coordinate mode (got only \(x != nil ? "--x" : "--y"))")
+        }
+        if hasSelector && x != nil {
+            throw ValidationError("Cannot combine selectors (--role/--name/--identifier) with coordinates (--x/--y)")
+        }
+        if !hasSelector && x == nil {
+            throw ValidationError("Provide either selectors (--role/--name/--identifier) or coordinates (--x/--y)")
+        }
+    }
+
+    func toArguments() -> [String: Value] {
+        var args = selector.toArguments()
+        if let x { args["x"] = .double(x) }
+        if let y { args["y"] = .double(y) }
+        if let radius { args["radius"] = .double(radius) }
+        if let duration { args["duration"] = .double(duration) }
+        return args
+    }
+}
+
+struct Pinch: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "pinch",
+        abstract: "Two-finger pinch by selector or at (x, y) coordinates.",
+        discussion: """
+            Pinches about the center of the first element matching the selector, or about \
+            (--x, --y). The fingers move symmetrically along a horizontal line.
+
+            --scale is how much the distance between the fingers changes: above 1 spreads \
+            them apart (zoom in), below 1 pinches them together (zoom out).
+
+            Examples:
+              iosef pinch --name "Map" --scale 2.0
+              iosef pinch --x 200 --y 400 --scale 0.5 --duration 0.6
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var center: GestureCenterOptions
+
+    @Option(name: .long, help: "Finger-distance multiplier: >1 zooms in, <1 zooms out")
+    var scale: Double
+
+    func run() async throws {
+        var args = center.toArguments()
+        args["scale"] = .double(scale)
+        common.addDevice(to: &args)
+        try await runToolCLI(toolName: "pinch", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+    }
+}
+
+struct Rotate: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "rotate",
+        abstract: "Two-finger rotate by selector or at (x, y) coordinates.",
+        discussion: """
+            Rotates about the center of the first element matching the selector, or about \
+            (--x, --y). The fingers sit on opposite sides of the center and sweep around it. \
+            Positive --degrees is clockwise.
+
+            Examples:
+              iosef rotate --name "Photo" --degrees 90
+              iosef rotate --x 200 --y 400 --degrees -45 --radius 80
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+    @OptionGroup var center: GestureCenterOptions
+
+    // .unconditional so a negative angle isn't mistaken for an option: --degrees -45
+    @Option(name: .long, parsing: .unconditional, help: "Rotation angle in degrees (positive is clockwise)")
+    var degrees: Double
+
+    func run() async throws {
+        var args = center.toArguments()
+        args["degrees"] = .double(degrees)
+        common.addDevice(to: &args)
+        try await runToolCLI(toolName: "rotate", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+    }
+}
+
+struct Touch: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "touch",
+        abstract: "Play raw one- or two-finger touch paths.",
+        discussion: """
+            The escape hatch for gestures that tap, swipe, pinch and rotate don't cover, \
+            such as a two-finger pan or a curved drag.
+
+            --fingers is a JSON array of 1–2 finger paths; each path is an array of \
+            {"x":, "y":} points in iOS points. Paths are interpolated along their length \
+            and the fingers advance in lockstep, so they needn't have the same number of points.
+
+            Examples:
+              # Two-finger pan upward
+              iosef touch --fingers '[[{"x":150,"y":500},{"x":150,"y":300}],[{"x":250,"y":500},{"x":250,"y":300}]]'
+              # One finger along an L-shaped path
+              iosef touch --fingers '[[{"x":100,"y":300},{"x":300,"y":300},{"x":300,"y":500}]]' --duration 1
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    @Option(name: .long, help: "JSON array of 1–2 finger paths, each an array of {\"x\":, \"y\":} points")
+    var fingers: String
+
+    @Option(name: .long, help: "Gesture duration in seconds (default 0.5)")
+    var duration: Double?
+
+    func run() async throws {
+        var args: [String: Value] = ["fingers": .string(fingers)]
+        if let duration { args["duration"] = .double(duration) }
+        common.addDevice(to: &args)
+        try await runToolCLI(toolName: "touch", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 

@@ -39,6 +39,14 @@ final class CompositeHIDTransport: HIDTransport, @unchecked Sendable {
         touchAndKeyboard().sendTouch(xRatio: xRatio, yRatio: yRatio, phase: phase)
     }
 
+    func sendTouches(
+        _ first: (xRatio: Double, yRatio: Double),
+        _ second: (xRatio: Double, yRatio: Double),
+        phase: HIDTouchPhase
+    ) {
+        touchAndKeyboard().sendTouches(first, second, phase: phase)
+    }
+
     func sendKey(usage: UInt8, down: Bool) {
         touchAndKeyboard().sendKey(usage: usage, down: down)
     }

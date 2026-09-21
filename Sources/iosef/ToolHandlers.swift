@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import MCP
 import SimulatorKit
 
@@ -92,6 +93,110 @@ func handleUISwipe(_ params: CallTool.Parameters) async throws -> CallTool.Resul
     )
 
     return .init(content: [.text("Swiped successfully")])
+}
+
+// MARK: - Multi-touch gestures
+
+struct GestureInputError: Error, LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+/// Where a pinch/rotate happens: an element's center (selector mode) or a point
+/// (coordinate mode), plus how far a finger may stray from it.
+struct GestureTarget {
+    let center: CGPoint
+    /// Largest finger distance from `center` that stays inside the element and on screen.
+    let maxRadius: Double
+    let hidClient: SimulatorHIDClient
+
+    /// The caller's radius if given, otherwise a comfortable default that fits.
+    func radius(requested: Double?) -> Double {
+        requested ?? min(100, maxRadius)
+    }
+}
+
+func resolveGestureTarget(from params: CallTool.Parameters) async throws -> GestureTarget {
+    let hasSelector = params.arguments?["role"]?.stringValue != nil
+        || params.arguments?["name"]?.stringValue != nil
+        || params.arguments?["identifier"]?.stringValue != nil
+    let x = extractDouble(params.arguments?["x"])
+    let y = extractDouble(params.arguments?["y"])
+
+    if (x == nil) != (y == nil) {
+        throw GestureInputError(message: "Both x and y are required for coordinate mode (got only \(x != nil ? "x" : "y"))")
+    }
+    if hasSelector && x != nil {
+        throw GestureInputError(message: "Cannot combine selectors (role/name/identifier) with coordinates (x/y) — use one mode or the other")
+    }
+
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    let screenWidth = Double(hidClient.screenSize.width) / Double(hidClient.screenScale)
+    let screenHeight = Double(hidClient.screenSize.height) / Double(hidClient.screenScale)
+
+    func roomOnScreen(_ center: CGPoint) -> Double {
+        min(center.x, screenWidth - center.x, center.y, screenHeight - center.y) - 5
+    }
+
+    if let x, let y {
+        let center = CGPoint(x: x, y: y)
+        return GestureTarget(center: center, maxRadius: roomOnScreen(center), hidClient: hidClient)
+    }
+    guard hasSelector else {
+        throw GestureInputError(message: "Provide either selectors (role/name/identifier) or coordinates (x/y)")
+    }
+
+    let (selector, matches) = try await resolveSelector(from: params)
+    guard let first = matches.first else { throw SelectorError.noMatch(selector) }
+    guard let frame = first.frame else { throw SelectorError.noFrame(selector) }
+    let center = CGPoint(x: frame.center.x, y: frame.center.y)
+    let insideElement = min(frame.width, frame.height) / 2 * 0.9
+    return GestureTarget(center: center, maxRadius: min(insideElement, roomOnScreen(center)), hidClient: hidClient)
+}
+
+func handlePinch(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    guard let scale = extractDouble(params.arguments?["scale"]) else {
+        return .init(content: [.text("Missing required parameter: scale")], isError: true)
+    }
+    let target = try await resolveGestureTarget(from: params)
+    let radius = target.radius(requested: extractDouble(params.arguments?["radius"]))
+    let fingers = try TouchPaths.pinch(center: target.center, scale: scale, radius: radius)
+    try target.hidClient.touchPaths(fingers, durationSeconds: extractDouble(params.arguments?["duration"]) ?? 0.5)
+    return .init(content: [.text("Pinched \(scale)x at (\(Int(target.center.x)), \(Int(target.center.y)))")])
+}
+
+func handleRotate(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    guard let degrees = extractDouble(params.arguments?["degrees"]) else {
+        return .init(content: [.text("Missing required parameter: degrees")], isError: true)
+    }
+    let target = try await resolveGestureTarget(from: params)
+    let radius = target.radius(requested: extractDouble(params.arguments?["radius"]))
+    let fingers = try TouchPaths.rotate(center: target.center, degrees: degrees, radius: radius)
+    try target.hidClient.touchPaths(fingers, durationSeconds: extractDouble(params.arguments?["duration"]) ?? 0.5)
+    return .init(content: [.text("Rotated \(degrees)° about (\(Int(target.center.x)), \(Int(target.center.y)))")])
+}
+
+/// Parses `fingers`: a JSON array of 1–2 paths, each an array of {"x":, "y":} points.
+func parseFingerPaths(_ json: String) throws -> [[CGPoint]] {
+    struct Point: Decodable { let x: Double; let y: Double }
+    do {
+        return try JSONDecoder().decode([[Point]].self, from: Data(json.utf8))
+            .map { $0.map { CGPoint(x: $0.x, y: $0.y) } }
+    } catch {
+        throw GestureInputError(message: #"fingers must be a JSON array of 1–2 paths, each an array of {"x":, "y":} points, e.g. [[{"x":150,"y":400},{"x":100,"y":400}],[{"x":250,"y":400},{"x":300,"y":400}]]"#)
+    }
+}
+
+func handleTouch(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    guard let json = params.arguments?["fingers"]?.stringValue else {
+        return .init(content: [.text("Missing required parameter: fingers")], isError: true)
+    }
+    let fingers = try parseFingerPaths(json)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    try hidClient.touchPaths(fingers, durationSeconds: extractDouble(params.arguments?["duration"]) ?? 0.5)
+    return .init(content: [.text("Played \(fingers.count)-finger touch path")])
 }
 
 func handleUIView(_ params: CallTool.Parameters) async throws -> CallTool.Result {

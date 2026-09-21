@@ -1,6 +1,6 @@
 # iosef
 
-A Swift CLI and [MCP server](https://modelcontextprotocol.io/) for interacting with the iOS Simulator that's optimized for agentic usage. Tap, swipe, type, screenshot, and read the accessibility tree, with a consistent coordinate space and simplified commands.
+A Swift CLI and [MCP server](https://modelcontextprotocol.io/) for interacting with the iOS Simulator that's optimized for agentic usage. Tap, swipe, pinch, type, screenshot, and read the accessibility tree, with a consistent coordinate space and simplified commands.
 
 ```
 iosef start --local --device "X"   →  creates/boots simulator, saves state to .iosef/state.json
@@ -83,6 +83,10 @@ iosef type --role AXTextField --text "hello"
 
 iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200
 iosef swipe --x-start 200 --y-start 600 --x-end 200 --y-end 200 --duration 0.3
+
+iosef pinch --name "Map" --scale 2.0           # Zoom in about an element's center
+iosef pinch --x 200 --y 400 --scale 0.5        # Zoom out about a point
+iosef rotate --name "Photo" --degrees 90       # Clockwise; negative is counterclockwise
 ```
 
 ### Selector commands
@@ -270,6 +274,9 @@ State is stored in `~/.iosef/state.json` (global) or `./.iosef/state.json` (loca
 | `tap` | `[--role R] [--name N] [--identifier I] [--x X --y Y] [--duration S]` | Tap by selector or at coordinates |
 | `type` | `--text <text> [--role R] [--name N] [--identifier I]` | Type text; with selectors: find + tap + type |
 | `swipe` | `--x-start X --y-start Y --x-end X --y-end Y [--delta N] [--duration S]` | Swipe between two points |
+| `pinch` | `--scale F [--role R] [--name N] [--identifier I] [--x X --y Y] [--radius P] [--duration S]` | Two-finger pinch; scale >1 zooms in, <1 zooms out |
+| `rotate` | `--degrees D [--role R] [--name N] [--identifier I] [--x X --y Y] [--radius P] [--duration S]` | Two-finger rotate; positive is clockwise |
+| `touch` | `--fingers <json> [--duration S]` | Play raw one- or two-finger paths |
 | `find` | `[--role R] [--name N] [--identifier I]` | Find elements by selector |
 | `exists` | `[--role R] [--name N] [--identifier I]` | Check if element exists (exit 1 if not) |
 | `count` | `[--role R] [--name N] [--identifier I]` | Count matching elements |

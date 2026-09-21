@@ -112,12 +112,26 @@ final class DTUHIDTransport: HIDTransport, @unchecked Sendable {
 
     /// Sends one digitizer contact. `xRatio`/`yRatio` are 0...1 from the top-left.
     func sendTouch(xRatio: Double, yRatio: Double, phase: HIDTouchPhase) {
-        let point = xpc_dictionary_create_empty()
-        xpc_dictionary_set_double(point, "x", xRatio)
-        xpc_dictionary_set_double(point, "y", yRatio)
+        sendDigitizerEvent(points: [(xRatio, yRatio)], phase: phase)
+    }
 
+    func sendTouches(
+        _ first: (xRatio: Double, yRatio: Double),
+        _ second: (xRatio: Double, yRatio: Double),
+        phase: HIDTouchPhase
+    ) {
+        sendDigitizerEvent(points: [first, second], phase: phase)
+    }
+
+    /// `pointTwo` is simply absent for a single contact.
+    private func sendDigitizerEvent(points: [(xRatio: Double, yRatio: Double)], phase: HIDTouchPhase) {
         let payload = xpc_dictionary_create_empty()
-        xpc_dictionary_set_value(payload, "pointOne", point)
+        for (key, point) in zip(["pointOne", "pointTwo"], points) {
+            let encoded = xpc_dictionary_create_empty()
+            xpc_dictionary_set_double(encoded, "x", point.xRatio)
+            xpc_dictionary_set_double(encoded, "y", point.yRatio)
+            xpc_dictionary_set_value(payload, key, encoded)
+        }
         xpc_dictionary_set_uint64(payload, "eventType", Self.wireValue(of: phase))
         xpc_dictionary_set_uint64(payload, "edge", 0)
         xpc_dictionary_set_uint64(payload, "target", 0)

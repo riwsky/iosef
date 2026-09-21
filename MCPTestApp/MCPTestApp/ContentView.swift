@@ -27,10 +27,18 @@ struct ContentView: View {
 
                 // Pushes a NavigationStack detail screen whose nav-bar (Back button,
                 // title, toolbar "More" item) regressed the tree-walk in issue #2.
-                NavigationLink(value: "item") {
-                    Text("Open detail")
+                HStack(spacing: 24) {
+                    NavigationLink(value: "item") {
+                        Text("Open detail")
+                    }
+                    .accessibilityIdentifier("open_detail")
+
+                    // Multi-touch needs more room than this screen has to spare (issue #12).
+                    NavigationLink(value: "gestures") {
+                        Text("Open gestures")
+                    }
+                    .accessibilityIdentifier("open_gestures")
                 }
-                .accessibilityIdentifier("open_detail")
                 .padding(.vertical, 6)
 
                 Divider()
@@ -40,8 +48,12 @@ struct ContentView: View {
                     .padding(.vertical, 8)
             }
             .accessibilityIdentifier("root_view")
-            .navigationDestination(for: String.self) { _ in
-                DetailView()
+            .navigationDestination(for: String.self) { destination in
+                if destination == "gestures" {
+                    PinchTestSection()
+                } else {
+                    DetailView()
+                }
             }
         }
     }
