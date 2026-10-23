@@ -78,6 +78,12 @@ final class DTUHIDTransport: HIDTransport, @unchecked Sendable {
         return version.compare(firstCoreSimulatorVersion, options: .numeric) != .orderedAscending
     }
 
+    /// Whether `device` can be reached through `dtuhidd`. visionOS guests don't vend its
+    /// services, and keystrokes sent while probing for them get lost.
+    static func isSupported(device: AnyObject, bridge: PrivateFrameworkBridge) -> Bool {
+        isSupportedByCoreSimulator && !bridge.isVisionOS(device: device)
+    }
+
     init(device: AnyObject) throws {
         var lastError: Error = DTUHIDError.connectionFailed
         for attempt in 1...Self.livenessAttempts {

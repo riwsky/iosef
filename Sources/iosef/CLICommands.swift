@@ -279,6 +279,10 @@ struct SimulatorCLI: AsyncParsableCommand {
                 Rotate.self,
                 Touch.self,
             ]),
+            CommandGroup(name: "visionOS:", subcommands: [
+                Look.self,
+                Recenter.self,
+            ]),
             CommandGroup(name: "Selectors:", subcommands: [
                 Find.self,
                 Exists.self,
@@ -976,6 +980,74 @@ struct Touch: AsyncParsableCommand {
         if let duration { args["duration"] = .double(duration) }
         common.addDevice(to: &args)
         try await runToolCLI(toolName: "touch", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+    }
+}
+
+struct Look: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "look",
+        abstract: "visionOS: move the viewer's head to look around.",
+        discussion: """
+            Sets the head pose, relative to the default seat: turn with --yaw (degrees, \
+            positive is right), look up or down with --pitch, and move with --x/--y/--z \
+            (metres; -z steps forward). The pose is absolute, so `iosef look` with no \
+            options looks straight ahead again. Later taps aim from the new viewpoint.
+
+            Windows stay where they are in the room; `iosef recenter` brings them in front.
+
+            Examples:
+              iosef look --yaw 90              # turn to face the right-hand wall
+              iosef look --pitch -30           # look down at the floor
+              iosef look --z -1 --yaw -20      # step forward and turn a little left
+              iosef look                       # back to the default view
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    // .unconditional so negative values aren't mistaken for options: --yaw -45
+    @Option(name: .long, parsing: .unconditional, help: "Degrees to turn right (negative turns left)")
+    var yaw: Double = 0
+
+    @Option(name: .long, parsing: .unconditional, help: "Degrees to look up (negative looks down)")
+    var pitch: Double = 0
+
+    @Option(name: .long, parsing: .unconditional, help: "Metres right of the default seat")
+    var x: Double = 0
+
+    @Option(name: .long, parsing: .unconditional, help: "Metres above the default eye height")
+    var y: Double = 0
+
+    @Option(name: .long, parsing: .unconditional, help: "Metres back from the default seat (negative steps forward)")
+    var z: Double = 0
+
+    func run() async throws {
+        var args: [String: Value] = [
+            "yaw": .double(yaw), "pitch": .double(pitch),
+            "x": .double(x), "y": .double(y), "z": .double(z),
+        ]
+        common.addDevice(to: &args)
+        try await runToolCLI(toolName: "look", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
+    }
+}
+
+struct Recenter: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "recenter",
+        abstract: "visionOS: bring windows back in front of the viewer.",
+        discussion: """
+            Holds the Digital Crown, which places windows and volumes in front of the \
+            viewer's current head. Pair with `iosef look` (no options) to get back to the \
+            default view and layout.
+            """
+    )
+
+    @OptionGroup var common: CommonOptions
+
+    func run() async throws {
+        var args: [String: Value] = [:]
+        common.addDevice(to: &args)
+        try await runToolCLI(toolName: "recenter", arguments: args, json: common.json, output: nil, verbose: common.verbose, common: common)
     }
 }
 

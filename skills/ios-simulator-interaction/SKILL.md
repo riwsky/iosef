@@ -6,8 +6,10 @@ description: >-
   the screen, tapping buttons, reading accessibility trees, finding elements
   by selector, asserting UI state, scripting multi-step test flows, installing
   and launching apps, reading simulator logs, or performing gestures like
-  drag-reorder, swipe-to-delete, pinch-to-zoom, rotate, and scrolling. If you're doing anything with
-  an iOS simulator, use this skill.
+  drag-reorder, swipe-to-delete, pinch-to-zoom, rotate, and scrolling. Also
+  covers the watchOS and visionOS (Apple Vision Pro) simulators: windows,
+  volumes, and immersive spaces. If you're doing anything with an iOS,
+  watchOS, or visionOS simulator, use this skill.
 ---
 
 # iOS Simulator Interaction
@@ -234,6 +236,20 @@ dragHandle.accessibilityLabel = "Reorder"
 
 Then the AX tree shows: `AXImage "Reorder" (374±12, 221±7)` — use center (374, 221).
 
+## visionOS (Apple Vision Pro simulator)
+
+On visionOS, iosef turns touches into **gaze + pinch**: `tap`, `swipe` and `touch` aim the eyes through the screen point and pinch the right hand. visionOS ignores plain touches, so this is the only way in. It works across windows, volumes, and immersive spaces (RealityKit entities with an `InputTargetComponent` and a collision shape).
+
+- **Use coordinates from `iosef view`.** visionOS accessibility only exposes top-level scenes right now, so `--name`/`--identifier` selectors and `describe` won't find app elements. Screenshots are 1920×1080 points on the Apple Vision Pro (4K) simulator; tap where you see things.
+- **Things in 3D project like a camera.** Content at world position (x, y, z) relative to the head (eyes at the origin, -Z ahead) appears at screen point `(960 + 960·x/-z, 540 - 960·y/-z)`. For example, an entity 1 m right and 2 m ahead at eye height is at (1440, 540).
+- **Drags move the hand, not the gaze.** visionOS picks the target where the pinch starts and then follows the hand, so `swipe` from the thing you want to move to where you want it. In windows that lands within a few points; 3D content moves in the right direction but by roughly 75–100% of the distance, so assert on the resulting state or re-drag.
+- **Moving windows and volumes:** `swipe` from the window's grab bar (the pill just below it). visionOS may also push the window farther away.
+- **Looking around:** `iosef look --yaw 90` turns the head right 90° (`--pitch` looks up; `--x/--y/--z` move it in metres, `-z` forward). It's absolute from the default seat, so `iosef look` alone faces forward again. Taps aim from the new viewpoint, so screenshot after looking and tap what you see. To face something at world (x, y, z), use `--yaw` = atan(x / -z) in degrees.
+- **Lost a window?** Windows stay where they are in the room when you look away or after being moved. `iosef recenter` (a Digital Crown hold) brings them in front of the current view; `iosef look` then `iosef recenter` restores a predictable layout. visionOS also remembers where an app's windows were moved across relaunches; reinstalling the app resets that.
+- **Typing:** tap the text field first, then `iosef type --text "..."` (keystrokes go to the focused field).
+- **Logging:** `print` doesn't reach the unified log on visionOS; have the app use `Logger`/`os_log` if you want to assert via `log_show`/`log_stream`.
+- Two-finger gestures (`pinch`, `rotate`, two-finger `touch`) aren't supported yet; only the first finger is sent.
+
 ## Command Quick Reference
 
 **Session**
@@ -267,6 +283,8 @@ Then the AX tree shows: `AXImage "Reorder" (374±12, 221±7)` — use center (37
 | `pinch --name "N" --scale F` | Two-finger pinch (zoom) |
 | `rotate --name "N" --degrees D` | Two-finger rotate |
 | `touch --fingers '<json>'` | Raw one- or two-finger paths |
+| `look --yaw D --pitch D` | visionOS: move the head (no options: default view) |
+| `recenter` | visionOS: bring windows in front of the viewer |
 
 **Assert**
 

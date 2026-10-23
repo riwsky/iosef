@@ -245,6 +245,17 @@ public final class PrivateFrameworkBridge: @unchecked Sendable {
         return CGSize(width: 1179, height: 2556)
     }
 
+    /// Whether a SimDevice runs visionOS, whose UI takes gaze + pinch rather than touches.
+    public func isVisionOS(device: AnyObject) -> Bool {
+        guard let runtime = device.value(forKey: "runtime") as AnyObject? else { return false }
+        return (runtime.value(forKey: "platformIdentifier") as? String) == "com.apple.platform.xrsimulator"
+    }
+
+    /// When a SimDevice last booted, or nil if CoreSimulator doesn't say.
+    public func lastBootedAt(device: AnyObject) -> Date? {
+        device.value(forKey: "lastBootedAt") as? Date
+    }
+
     /// Gets the screen scale from a SimDevice's deviceType.
     public func screenScale(forDevice device: AnyObject) -> Float {
         guard let deviceType = device.value(forKey: "deviceType") else {

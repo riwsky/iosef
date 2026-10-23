@@ -141,6 +141,38 @@ func allTools() -> [Tool] {
         ))
     }
 
+    if !isFiltered("look") {
+        func number(_ what: String) -> Value {
+            .object(["type": .string("number"), "description": .string(what)])
+        }
+        tools.append(Tool(
+            name: "look",
+            description: "visionOS only: move the viewer's head, to look around the room or at content off to the side. The pose is absolute, relative to the default seat, so calling it with no arguments looks straight ahead again. Later taps aim from the new viewpoint. Windows stay where they are in the room; use recenter to bring them in front.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "yaw": number("Degrees to turn right (negative turns left). Default 0."),
+                    "pitch": number("Degrees to look up (negative looks down). Default 0."),
+                    "x": number("Metres to step right of the default seat. Default 0."),
+                    "y": number("Metres to rise above the default eye height. Default 0."),
+                    "z": number("Metres to step back from the default seat (negative steps forward). Default 0."),
+                    "udid": udidSchema,
+                ]),
+            ])
+        ))
+    }
+
+    if !isFiltered("recenter") {
+        tools.append(Tool(
+            name: "recenter",
+            description: "visionOS only: bring windows and volumes back in front of the viewer's current head, like holding the Digital Crown. Takes about 3.5 seconds.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object(["udid": udidSchema]),
+            ])
+        ))
+    }
+
     if !isFiltered("view") {
         tools.append(Tool(
             name: "view",
@@ -349,6 +381,10 @@ func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
             return try await handleRotate(params)
         case "touch":
             return try await handleTouch(params)
+        case "look":
+            return try await handleLook(params)
+        case "recenter":
+            return try await handleRecenter(params)
         case "view":
             return try await handleUIView(params)
         case "install_app":
