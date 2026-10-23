@@ -152,6 +152,31 @@ The accessibility tree reports positions as `(center±half-size)` — the center
 
 This means visual agents can tap exactly where they see elements in screenshots, with no coordinate translation layer.
 
+## visionOS
+
+iosef drives the visionOS (Apple Vision Pro) simulator too. visionOS drops ordinary touches and only responds to indirect input, so on an xrOS device `tap`, `swipe` and `touch` become **gaze + pinch**: the eyes look through the screen point and the right hand pinches. Drags hold the pinch and move the hand, which is how visionOS moves things. This works in windows, volumes, and immersive spaces, including tapping and dragging RealityKit entities.
+
+```bash
+iosef tap --x 960 --y 600                                   # look at a point and pinch
+iosef swipe --x-start 1097 --y-start 618 --x-end 1217 --y-end 618   # pinch-drag something 120pt right
+iosef type --text "hello"                                   # into the focused text field
+iosef look --yaw 90                                         # turn to face the right-hand wall
+iosef look --pitch -30 --z -0.5                             # step forward and look down
+iosef look                                                  # straight ahead from the default seat again
+iosef recenter                                              # bring windows in front of you (Digital Crown hold)
+```
+
+`look` moves the viewer's head: `--yaw` turns right, `--pitch` looks up (degrees), and `--x/--y/--z` move it (metres; `-z` is forward), all relative to the default seat. The pose is absolute and is remembered per device until the simulator reboots, so later taps aim from wherever the head now is. Windows stay put in the room when you look away; `recenter` brings them back in front.
+
+Limitations:
+
+- Accessibility only exposes the app's top-level scenes, so selectors and `describe` can't find elements yet. Use coordinates from `iosef view`.
+- Moving the camera outside iosef (e.g. with Device Hub's camera tools) isn't tracked, so taps aim from where iosef last put the head. `iosef look` puts it somewhere known again.
+- Screen points map to gaze through a 90° horizontal field-of-view camera at the head, calibrated on the Apple Vision Pro (4K) simulator. Set `IOSEF_GAZE_HFOV_DEGREES` (and `IOSEF_GAZE_DRAG_GAIN` for drags) to re-calibrate for a different simulator camera.
+- Two-finger gestures aren't supported yet.
+
+How it works: the touches are sent as Indigo "Paloma collection" messages (a selection ray plus both hands' poses and pinch state) to the guest's manipulator HID service, which the visionOS simulator turns into the same natural-input events the headset produces. Head moves are Indigo "Paloma pose" messages to its pose service, and recentering is a held AC Home (Digital Crown) button. See `Sources/SimulatorKit/Input/GazePinchTransport.swift` and `HeadPose.swift` for the wire formats. `VisionTestApp` is the playground, and `scripts/test-visionos.py` runs the end-to-end gauntlet against it.
+
 ## Directory-scoped sessions
 
 By default, iosef stores state globally in `~/.iosef/`. You can instead create a session scoped to the current directory with `--local`:
@@ -277,6 +302,8 @@ State is stored in `~/.iosef/state.json` (global) or `./.iosef/state.json` (loca
 | `pinch` | `--scale F [--role R] [--name N] [--identifier I] [--x X --y Y] [--radius P] [--duration S]` | Two-finger pinch; scale >1 zooms in, <1 zooms out |
 | `rotate` | `--degrees D [--role R] [--name N] [--identifier I] [--x X --y Y] [--radius P] [--duration S]` | Two-finger rotate; positive is clockwise |
 | `touch` | `--fingers <json> [--duration S]` | Play raw one- or two-finger paths |
+| `look` | `[--yaw D] [--pitch D] [--x M] [--y M] [--z M]` | visionOS: move the viewer's head (no options: default view) |
+| `recenter` | | visionOS: bring windows back in front of the viewer |
 | `find` | `[--role R] [--name N] [--identifier I]` | Find elements by selector |
 | `exists` | `[--role R] [--name N] [--identifier I]` | Check if element exists (exit 1 if not) |
 | `count` | `[--role R] [--name N] [--identifier I]` | Count matching elements |

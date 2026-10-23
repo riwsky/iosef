@@ -472,3 +472,26 @@ func handleLogStream(_ params: CallTool.Parameters) async throws -> CallTool.Res
     }
     return .init(content: [.text(output)])
 }
+
+func handleLook(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let pose = HeadPose(
+        yawDegrees: extractDouble(params.arguments?["yaw"]) ?? 0,
+        pitchDegrees: extractDouble(params.arguments?["pitch"]) ?? 0,
+        x: extractDouble(params.arguments?["x"]) ?? 0,
+        y: extractDouble(params.arguments?["y"]) ?? 0,
+        z: extractDouble(params.arguments?["z"]) ?? 0)
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    try hidClient.setHeadPose(pose)
+    if pose == .default {
+        return .init(content: [.text("Looking straight ahead from the default seat")])
+    }
+    return .init(content: [.text("Head at yaw \(pose.yawDegrees)°, pitch \(pose.pitchDegrees)°, offset (\(pose.x), \(pose.y), \(pose.z)) m")])
+}
+
+func handleRecenter(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    let udid = try await SimulatorCache.shared.resolveDeviceID(params.arguments?["udid"]?.stringValue)
+    let hidClient = try await SimulatorCache.shared.getHIDClient(udid: udid)
+    try hidClient.recenter()
+    return .init(content: [.text("Recentered windows in front of the viewer")])
+}

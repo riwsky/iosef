@@ -95,6 +95,12 @@ final class IndigoHIDTransport: HIDTransport, @unchecked Sendable {
         sendIndigoMessage(fn(Int32(source), direction, Int32(IndigoButtonTargetConst.hardware)))
     }
 
+    /// Sends an already-encoded Indigo message, for message kinds this transport doesn't
+    /// build itself (e.g. `GazePinchMessage`).
+    func sendRaw(_ data: Data) {
+        send(data)
+    }
+
     // MARK: - Message delivery
 
     /// Delivers one Indigo message, reconnecting once if the simulator tore down the

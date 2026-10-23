@@ -18,6 +18,8 @@ enum IndigoDirection {
 enum IndigoButtonSourceConst {
     static let applePay: UInt32 = UInt32(kButtonSourceApplePay)
     static let homeButton: UInt32 = UInt32(kButtonSourceHomeButton)
+    /// Consumer "AC Home": the Digital Crown on visionOS, where holding it recenters.
+    static let acHome: UInt32 = 0x7D0
     static let lock: UInt32 = UInt32(kButtonSourceLock)
     static let keyboard: UInt32 = UInt32(kButtonSourceKeyboard)
     static let sideButton: UInt32 = UInt32(kButtonSourceSideButton)

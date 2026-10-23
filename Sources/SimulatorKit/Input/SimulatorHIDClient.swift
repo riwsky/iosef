@@ -10,7 +10,9 @@ public final class SimulatorHIDClient: @unchecked Sendable {
     public let screenSize: CGSize      // pixel dimensions (e.g., 1179x2556)
     public let screenScale: Float      // e.g., 3.0
 
-    private let transport: any HIDTransport
+    private let transport: CompositeHIDTransport
+    private let udid: String
+    private let bootedAt: Date?
 
     public init(udid: String) throws {
         let bridge = PrivateFrameworkBridge.shared
@@ -18,6 +20,9 @@ public final class SimulatorHIDClient: @unchecked Sendable {
 
         let device = try bridge.lookUpDevice(udid: udid)
         self.transport = try CompositeHIDTransport(bridge: bridge, device: device)
+        self.udid = udid
+        self.bootedAt = bridge.lastBootedAt(device: device)
+        transport.visionOS?.assumeHeadPose(HeadPoseStore.load(udid: udid, bootedAt: bootedAt))
         self.screenSize = bridge.screenSize(forDevice: device)
         self.screenScale = bridge.screenScale(forDevice: device)
     }
@@ -106,6 +111,29 @@ public final class SimulatorHIDClient: @unchecked Sendable {
         transport.flush()
     }
 
+    // MARK: - visionOS
+
+    /// Whether this device runs visionOS, where touches become gaze + pinch and the viewer's
+    /// head can be moved.
+    public var isVisionOS: Bool { transport.visionOS != nil }
+
+    /// Moves the visionOS viewer's head to `pose` (absolute, relative to the default seat).
+    /// Later taps aim from the new viewpoint, in this process and later ones.
+    public func setHeadPose(_ pose: HeadPose) throws {
+        guard let vision = transport.visionOS else { throw VisionOSOnlyError(action: "Moving the head") }
+        vision.setHeadPose(pose)
+        HeadPoseStore.save(pose, udid: udid, bootedAt: bootedAt)
+    }
+
+    /// Brings visionOS windows back in front of the viewer, like holding the Digital Crown.
+    public func recenter() throws {
+        guard transport.visionOS != nil else { throw VisionOSOnlyError(action: "Recentering") }
+        transport.sendButton(source: IndigoButtonSourceConst.acHome, direction: IndigoDirection.down)
+        usleep(2_000_000)  // a press-and-hold; a short press opens the Home View instead
+        transport.sendButton(source: IndigoButtonSourceConst.acHome, direction: IndigoDirection.up)
+        usleep(1_500_000)  // let the windows finish moving
+    }
+
     /// Sends a hardware button press (home, lock, side, etc.).
     public func pressButton(source: UInt32, direction: Int32) {
         transport.sendButton(source: source, direction: direction)
@@ -187,4 +215,9 @@ public final class SimulatorHIDClient: @unchecked Sendable {
             return nil
         }
     }
+}
+
+public struct VisionOSOnlyError: Error, LocalizedError {
+    let action: String
+    public var errorDescription: String? { "\(action) is only supported on visionOS simulators" }
 }
