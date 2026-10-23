@@ -16,7 +16,7 @@ struct ImmersiveView: View {
             )
             orb.name = "orb"
             orb.position = [-1.0, 1.6, -2.0]
-            orb.makeInteractive(radius: 0.15)
+            orb.makeInteractive(radius: 0.15, label: "Orb")
             content.add(orb)
 
             let cube = ModelEntity(
@@ -25,7 +25,7 @@ struct ImmersiveView: View {
             )
             cube.name = "immersive_cube"
             cube.position = Self.cubeStart
-            cube.makeInteractive(radius: 0.14)
+            cube.makeInteractive(radius: 0.14, label: "Immersive cube")
             content.add(cube)
             log.notice("[VisionTest] Immersive space ready")
         }

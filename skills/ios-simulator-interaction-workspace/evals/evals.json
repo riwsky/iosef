@@ -70,22 +70,22 @@
     {
       "id": 6,
       "prompt": "Build VisionTestApp for the visionOS simulator (./scripts/build-test-app.sh visionos), tap the button labelled R1C3 in its window, and verify the window's tap count went up and the last tap shows R1C3.",
-      "expected_output": "The agent builds and launches the visionOS playground, takes a screenshot to find the button (selectors don't work on visionOS), taps it by coordinates, and verifies the status labels by screenshot or the app's log.",
+      "expected_output": "The agent builds and launches the visionOS playground, finds the button in the accessibility tree, taps it by selector, and verifies the status labels with iosef text, a screenshot, or the app's log.",
       "expectations": [
         "Built the app with ./scripts/build-test-app.sh visionos",
-        "Used iosef view to find the button's coordinates instead of describe or selectors",
-        "Tapped with iosef tap --x/--y at the R1C3 button",
-        "Verified 'Last: R1C3' via a screenshot or the '[VisionTest] Button tapped: R1C3' log line",
+        "Found the button with describe/find or a selector (identifier grid_1_3 or name 'Row 1 Column 3') rather than guessing coordinates",
+        "Tapped the R1C3 button (e.g. iosef tap --identifier grid_1_3)",
+        "Verified the last tap is R1C3 via iosef text (last_tap_label), a screenshot, or the '[VisionTest] Button tapped: R1C3' log line",
         "Did NOT run iosef --help"
       ]
     },
     {
       "id": 7,
       "prompt": "In VisionTestApp on the visionOS simulator, open the volume and drag its cube to the right, then confirm from the window that the cube's position changed.",
-      "expected_output": "The agent taps Open Volume, finds the cube in a screenshot, drags it with a pinch-drag (iosef swipe starting on the cube), and checks the 'Volume cube ... at' label or log.",
+      "expected_output": "The agent taps Open Volume, finds the cube's frame in the accessibility tree (or a screenshot), drags it with a pinch-drag (iosef swipe starting on the cube), and checks the 'Volume cube ... at' label or log.",
       "expectations": [
-        "Tapped the Open Volume button by coordinates",
-        "Took a screenshot to locate the volume's cube",
+        "Tapped the Open Volume button (by selector or coordinates)",
+        "Located the volume's cube from the 'Volume cube' element's frame (describe/find) or a screenshot",
         "Used iosef swipe starting on the cube and ending to its right",
         "Verified the volume cube's position is no longer 0, 0, 0 (label or '[VisionTest] Volume cube moved' log)",
         "Did NOT run iosef --help"
@@ -94,10 +94,10 @@
     {
       "id": 8,
       "prompt": "In VisionTestApp on the visionOS simulator, enter the immersive space, tap the pink orb, and drag the purple cube toward the middle of the view. Report the orb tap count and the cube's new position.",
-      "expected_output": "The agent enters the immersive space, locates the orb and cube in a screenshot, taps the orb, pinch-drags the cube toward the centre, and reads the results from the window's labels or the app's log.",
+      "expected_output": "The agent enters the immersive space, locates the orb and cube from the accessibility tree (or a screenshot), taps the orb, pinch-drags the cube toward the centre, and reads the results from the window's labels or the app's log.",
       "expectations": [
-        "Tapped Enter Space and took a screenshot to find the orb and cube",
-        "Tapped the orb by coordinates and verified 'Orb taps: 1'",
+        "Tapped Enter Space and found the orb and cube ('Orb' and 'Immersive cube' elements, or a screenshot)",
+        "Tapped the orb (e.g. iosef tap --role AXButton --name Orb) and verified the orb tap count is 1",
         "Dragged the cube with iosef swipe starting on the cube",
         "Reported the cube's new position from the 'Immersive cube at' label or the log",
         "Did NOT run iosef --help"

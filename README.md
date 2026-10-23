@@ -157,7 +157,9 @@ This means visual agents can tap exactly where they see elements in screenshots,
 iosef drives the visionOS (Apple Vision Pro) simulator too. visionOS drops ordinary touches and only responds to indirect input, so on an xrOS device `tap`, `swipe` and `touch` become **gaze + pinch**: the eyes look through the screen point and the right hand pinches. Drags hold the pinch and move the hand, which is how visionOS moves things. This works in windows, volumes, and immersive spaces, including tapping and dragging RealityKit entities.
 
 ```bash
-iosef tap --x 960 --y 600                                   # look at a point and pinch
+iosef tap --identifier grid_1_3                             # look at an element and pinch
+iosef tap --role AXButton --name "Volume cube"              # RealityKit entities too
+iosef text --identifier last_tap_label                      # read a label
 iosef swipe --x-start 1097 --y-start 618 --x-end 1217 --y-end 618   # pinch-drag something 120pt right
 iosef type --text "hello"                                   # into the focused text field
 iosef look --yaw 90                                         # turn to face the right-hand wall
@@ -168,14 +170,23 @@ iosef recenter                                              # bring windows in f
 
 `look` moves the viewer's head: `--yaw` turns right, `--pitch` looks up (degrees), and `--x/--y/--z` move it (metres; `-z` is forward), all relative to the default seat. The pose is absolute and is remembered per device until the simulator reboots, so later taps aim from wherever the head now is. Windows stay put in the room when you look away; `recenter` brings them back in front.
 
+The accessibility tree works on visionOS: `describe`, `describe --x/--y` and the selector commands (`tap`, `type`, `text`, `find`, `exists`, `count`, `wait`) see every visible scene's elements, grouped by scene (each window, volume, immersive space and system HUD), including the window chrome (Close, Share, App Placement Bar). Frames are where the element appears on screen: iosef reads each element's 3D placement from its accessibility automation properties, places its scene in the world, and projects it from the current head pose through the same camera that gaze uses, so frames follow windows and volumes as they move, tilt and recede, and as you `look` around.
+
 Limitations:
 
-- Accessibility only exposes the app's top-level scenes, so selectors and `describe` can't find elements yet. Use coordinates from `iosef view`.
 - Moving the camera outside iosef (e.g. with Device Hub's camera tools) isn't tracked, so taps aim from where iosef last put the head. `iosef look` puts it somewhere known again.
+- RealityKit entities appear only if they have an `AccessibilityComponent` (with `isAccessibilityElement` set). They have labels but no identifiers, so select them by `--name` (with `--role AXButton` to skip text that mentions the same words).
+- Elements out of view (behind you, or off screen) are listed with no frame.
+- Right after an app launches, SurfBoard takes a few seconds to expose its scenes; use `wait` rather than a one-shot `describe`.
+- Reading the tree costs about a second per call, and the first call in a while builds a small helper with Xcode's visionOS simulator SDK (cached in `~/Library/Caches/iosef`).
 - Screen points map to gaze through a 90° horizontal field-of-view camera at the head, calibrated on the Apple Vision Pro (4K) simulator. Set `IOSEF_GAZE_HFOV_DEGREES` (and `IOSEF_GAZE_DRAG_GAIN` for drags) to re-calibrate for a different simulator camera.
 - Two-finger gestures aren't supported yet.
 
-How it works: the touches are sent as Indigo "Paloma collection" messages (a selection ray plus both hands' poses and pinch state) to the guest's manipulator HID service, which the visionOS simulator turns into the same natural-input events the headset produces. Head moves are Indigo "Paloma pose" messages to its pose service, and recentering is a held AC Home (Digital Crown) button. See `Sources/SimulatorKit/Input/GazePinchTransport.swift` and `HeadPose.swift` for the wire formats. `VisionTestApp` is the playground, and `scripts/test-visionos.py` runs the end-to-end gauntlet against it.
+How it works: the touches are sent as Indigo "Paloma collection" messages (a selection ray plus both hands' poses and pinch state) to the guest's manipulator HID service, which the visionOS simulator turns into the same natural-input events the headset produces. Head moves are Indigo "Paloma pose" messages to its pose service, and recentering is a held AC Home (Digital Crown) button. See `Sources/SimulatorKit/Input/GazePinchTransport.swift` and `HeadPose.swift` for the wire formats.
+
+For accessibility, the frontmost "app" on visionOS is SurfBoard, the system shell, whose children are empty placeholders, one per scene. iosef asks each placeholder for its scene's elements instead, reads every element's `AXAutomationSystemProperties` (its scene, its transform from the scene's root, its bounding box in meters), and gets each scene's world transform and the head pose from RealitySystemSupport, via a small program it runs inside the simulator. See `Sources/SimulatorKit/Accessibility/VisionOSSpatial.swift`.
+
+`VisionTestApp` is the playground, and `scripts/test-visionos.py` runs the end-to-end gauntlet against it, finding every target by selector.
 
 ## Directory-scoped sessions
 

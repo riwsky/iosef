@@ -24,6 +24,8 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     private let udid: String
     private let iosPointSize: CGSize    // iOS point dimensions (e.g. 402x874)
     private var cachedRootFrame: CGRect?
+    /// Set on visionOS, whose elements are placed in 3D and projected onto the screen.
+    private let gazeCamera: GazeCamera?
 
     private func setBridgeToken(_ token: String, on obj: AnyObject) {
         obj.setValue(token, forKey: "bridgeDelegateToken")
@@ -48,6 +50,9 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
             width: CGFloat(pixelSize.width) / CGFloat(scale),
             height: CGFloat(pixelSize.height) / CGFloat(scale)
         )
+        self.gazeCamera = bridge.isVisionOS(device: device)
+            ? GazeCamera.default(aspectRatio: Double(pixelSize.width) / max(Double(pixelSize.height), 1))
+            : nil
 
         // Create our delegate that bridges AXPTranslator callbacks to SimDevice
         let del = AXPTranslationDispatcher(device: self.device, bridge: self.bridge)
@@ -89,6 +94,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         defer { dispatcher.unregisterToken(token) }
 
         try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
+
+        if let gazeCamera {
+            return try visionOSElements(camera: gazeCamera, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds)
+        }
 
         guard let translation = frontmostApplication(token: token) else {
             throw AXPBridgeError.noTranslationObject
@@ -218,6 +227,16 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     }
 
     private func accessibilityElementAtPointImpl(x: Double, y: Double, timeout: Duration) throws -> TreeNode {
+        // visionOS hit-tests return nothing, so search the projected tree instead (below the
+        // root, which spans the whole screen).
+        if gazeCamera != nil {
+            let tree = try accessibilityElementsImpl(timeout: timeout)
+            guard let hit = Self.smallestNode(containing: (x, y), in: tree.flatMap(\.children)) else {
+                throw AXPBridgeError.noElementAtPoint(x: x, y: y)
+            }
+            return hit
+        }
+
         let start = ContinuousClock.now
         let deadline = start.advanced(by: timeout)
         let timeoutSeconds = timeout.totalSeconds
@@ -398,7 +417,9 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
     ///   level), which otherwise materializes as a ~4000-deep chain of repeated nodes
     ///   and overflows the stack of whichever thread walks, searches, encodes, or
     ///   even deallocates the tree.
-    private func serializeElement(_ element: AnyObject, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int, ancestors: Set<ObjectIdentifier> = []) throws -> TreeNode {
+    /// - Parameter spatial: on visionOS, collects each element's 3D placement in pre-order, for
+    ///   `applySpatialFrames` to project once the world transforms are known.
+    private func serializeElement(_ element: AnyObject, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double, elementCount: inout Int, ancestors: Set<ObjectIdentifier> = [], spatial: SpatialCollector? = nil) throws -> TreeNode {
         elementCount += 1
         // Extract properties via KVC / selectors
         let role = stringProperty(element, "accessibilityRole")
@@ -408,10 +429,10 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let identifier = stringProperty(element, "accessibilityIdentifier")
         let hint = stringProperty(element, "accessibilityHelp")
 
-        // Frame
+        // Frame (on visionOS a window-local rect, replaced by `applySpatialFrames`)
         let frameInfo: TreeNode.FrameInfo?
         let frameSel = NSSelectorFromString("accessibilityFrame")
-        if element.responds(to: frameSel) {
+        if spatial == nil, element.responds(to: frameSel) {
             let frame = callFrameMethod(element, selector: frameSel)
             frameInfo = TreeNode.FrameInfo(
                 x: (Double(frame.origin.x) * 100).rounded() / 100,
@@ -442,6 +463,9 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         // AXPMacPlatformElement lazily resolves children via XPC using the token.
         if let trans = (element as AnyObject).value(forKey: "translation") as AnyObject? {
             setBridgeToken(token, on: trans)
+            spatial?.translations.append(trans)
+        } else {
+            spatial?.translations.append(nil)
         }
 
         // Children
@@ -460,7 +484,7 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
                     if let translation = (child as AnyObject).value(forKey: "translation") as AnyObject? {
                         setBridgeToken(token, on: translation)
                     }
-                    return try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount, ancestors: path)
+                    return try serializeElement(child, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds, elementCount: &elementCount, ancestors: path, spatial: spatial)
                 }
                 childNodes.append(node)
             }
@@ -541,6 +565,237 @@ public final class AXPAccessibilityBridge: NSObject, @unchecked Sendable {
         let imp = method_getImplementation(method)
         let fn = unsafeBitCast(imp, to: FrameFn.self)
         return fn(obj, selector)
+    }
+
+    // MARK: - visionOS
+
+    /// `AXPAttributeDebugiOSAttribute`: reads the raw iOS attribute named by the request's
+    /// `parameter`, for attributes AXP has no mapping for.
+    private static let debugiOSAttribute = 63
+    private static let childrenAttribute = 8  // AXPAttributeChildren
+    /// SurfBoard's answer for a scene container: every element in the scene, flattened, plus
+    /// the window chrome (close button, placement and resize bars) from RealityChrome.
+    private static let sceneElementsAttribute = 2095
+    /// `AXAutomationSystemProperties`: the element's 3D placement (see `SpatialProperties`).
+    /// Complete, but the app takes ~50ms to answer it.
+    private static let automationSystemPropertiesAttribute = 5063
+    // The automation properties one at a time. The window-space transform is cheap (~1ms);
+    // the top-level-entity-space transform costs ~25ms.
+    private static let backingObjectTypeAttribute = 20007     // "View" or "Entity"
+    private static let topLevelEntityIDAttribute = 20008
+    private static let topLevelEntitySpaceTransformAttribute = 20009
+    private static let boundingBoxAttribute = 20012
+    private static let windowSpaceTransformAttribute = 20013
+
+    /// Each element's placement, in the order given. A window's (or ornament's) views differ
+    /// only by their window-space transform, so the full automation properties are read for
+    /// the first view per top-level entity, and the rest are derived from it (see
+    /// `SpatialProperties.init(relativeTo:)`). RealityKit entities are read individually: their
+    /// automation properties carry no bounding box, and in an immersive space an identity
+    /// transform for every entity, so their own transform and bounds are read instead.
+    private func spatialProperties(of translations: [AnyObject?]) -> [SpatialProperties?] {
+        var anchors: [UInt64: SpatialProperties.Anchor?] = [:]
+        return translations.map { translation in
+            guard let translation else { return nil }
+            func full() -> SpatialProperties? {
+                (iosAttribute(Self.automationSystemPropertiesAttribute, of: translation) as? [String: Any])
+                    .flatMap(SpatialProperties.init(automationProperties:))
+            }
+            let box = { self.iosAttribute(Self.boundingBoxAttribute, of: translation).flatMap(SpatialProperties.boundingBox) }
+
+            if iosAttribute(Self.backingObjectTypeAttribute, of: translation) as? String == "Entity" {
+                guard var spatial = full() else { return nil }
+                if let transform = iosAttribute(Self.topLevelEntitySpaceTransformAttribute, of: translation)
+                    .flatMap(SpatialProperties.matrix) {
+                    spatial.transform = transform
+                }
+                if let box = box() { (spatial.boundingBoxMin, spatial.boundingBoxMax) = box }
+                return spatial
+            }
+
+            guard let entity = (iosAttribute(Self.topLevelEntityIDAttribute, of: translation) as? NSNumber)?.uint64Value,
+                  let window = iosAttribute(Self.windowSpaceTransformAttribute, of: translation).flatMap(SpatialProperties.matrix),
+                  window.columns.3.w != 0  // all zeros for UIKit views hosted in SwiftUI
+            else { return full() }
+            if let anchor = anchors[entity] ?? nil, let box = box() {
+                return SpatialProperties(relativeTo: anchor, windowSpaceTransform: window, boundingBox: box)
+            }
+            let spatial = full()
+            if anchors[entity] == nil {
+                anchors[entity] = spatial.map { SpatialProperties.Anchor(properties: $0, windowSpaceTransform: window) }
+            }
+            return spatial
+        }
+    }
+
+    /// Collects elements in the order `serializeElement` visits them, to read their
+    /// `SpatialProperties` afterwards.
+    private final class SpatialCollector {
+        var translations: [AnyObject?] = []
+    }
+
+    /// The platform element for `translation`, ready to read with `token`. Platform elements
+    /// are cached per object ID and keep the translation they were first made from, whose
+    /// token belongs to an earlier read, so that one needs the current token too.
+    private func platformElement(from translation: AnyObject, token: String) -> AnyObject? {
+        setBridgeToken(token, on: translation)
+        guard let element = macPlatformElement(from: translation) else { return nil }
+        (element as AnyObject).value(forKey: "translation").map { setBridgeToken(token, on: $0 as AnyObject) }
+        return element
+    }
+
+    /// Reads a raw iOS accessibility attribute from the element behind `translation`.
+    private func iosAttribute(_ attribute: Int, of translation: AnyObject) -> Any? {
+        axpAttribute(Self.debugiOSAttribute, parameters: ["parameter": NSNumber(value: attribute)], of: translation)
+    }
+
+    /// Reads an AXP attribute straight from the simulator, without a platform element.
+    private func axpAttribute(_ attribute: Int, parameters: [String: Any]? = nil, of translation: AnyObject) -> Any? {
+        guard let requestClass = objc_lookUpClass("AXPTranslatorRequest") as AnyObject?,
+              let request = requestClass.perform(NSSelectorFromString("requestWithTranslation:"), with: translation)?
+                .takeUnretainedValue() else { return nil }
+        request.setValue(NSNumber(value: 2), forKey: "requestType")  // attribute
+        request.setValue(NSNumber(value: attribute), forKey: "attributeType")
+        if let parameters { request.setValue(parameters, forKey: "parameters") }
+        guard let response = try? bridge.sendAccessibilityRequest(request, toDevice: device, timeoutSeconds: 5) else {
+            return nil
+        }
+        let value = response.value(forKey: "resultData")
+        return value is NSNull ? nil : value
+    }
+
+    /// The visionOS tree. The frontmost "application" is SurfBoard, the system shell, whose
+    /// children are one placeholder group per scene (window, volume, immersive space, or
+    /// system UI such as Control Center) with no children of their own. Each scene's elements
+    /// come from `sceneElementsAttribute` instead, and their frames are window-local points,
+    /// so they're replaced with the element's 3D bounding box projected onto the screen.
+    private func visionOSElements(camera: GazeCamera, token: String, deadline: ContinuousClock.Instant, timeoutSeconds: Double) throws -> [TreeNode] {
+        let start = ContinuousClock.now
+        // Spawning the world-transform helper takes most of a second, so start it now: it
+        // reports every visible scene, which normally covers every scene the walk finds.
+        let visibleWorld = VisionOSWorldHelper.Pending(device: device, scenes: [],
+                                                       timeoutSeconds: max((deadline - start).totalSeconds, 0.5))
+        var shell: AnyObject
+        var containers: [AnyObject]  // translation objects
+        // SurfBoard lists no scenes while one opens or closes, and for several seconds after
+        // an app launches. Ride out the brief gaps; for longer ones, return the empty tree and
+        // leave waiting to the caller (`wait` polls).
+        let retryUntil = min(deadline, start + .seconds(2))
+
+        repeat {
+            guard let translation = frontmostApplication(token: token) else {
+                throw AXPBridgeError.noTranslationObject
+            }
+            guard let element = platformElement(from: translation, token: token) else {
+                throw AXPBridgeError.noMacPlatformElement
+            }
+            shell = element
+            containers = axpAttribute(Self.childrenAttribute, of: translation) as? [AnyObject] ?? []
+            if containers.isEmpty, ContinuousClock.now < retryUntil {
+                logDiagnostic("visionOS: no scenes yet, retrying")
+                usleep(250_000)
+            } else {
+                break
+            }
+        } while true
+
+        var elementCount = 1
+        let spatial = SpatialCollector()
+        var scenes: [TreeNode] = []
+        for containerTranslation in containers {
+            try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
+            guard let container = platformElement(from: containerTranslation, token: token) else { continue }
+            elementCount += 1
+
+            var members: [TreeNode] = []
+            for member in iosAttribute(Self.sceneElementsAttribute, of: containerTranslation) as? [AnyObject] ?? [] {
+                try checkDeadline(deadline, timeoutSeconds: timeoutSeconds)
+                let node: TreeNode? = try autoreleasepool {
+                    guard let element = platformElement(from: member, token: token) else { return nil }
+                    return try serializeElement(element, token: token, deadline: deadline, timeoutSeconds: timeoutSeconds,
+                                                elementCount: &elementCount, spatial: spatial)
+                }
+                if let node { members.append(node) }
+            }
+            scenes.append(TreeNode(
+                role: stringProperty(container, "accessibilityRole"),
+                label: stringProperty(container, "accessibilityLabel"),
+                title: nil, value: nil, identifier: nil, hint: nil, traits: nil,
+                frame: nil, children: members
+            ))
+        }
+
+        let placements = spatialProperties(of: spatial.translations)
+        let sceneIDs = Set(placements.compactMap { $0?.sceneID })
+        var world: VisionOSWorld?
+        do {
+            world = try visibleWorld.wait()
+            let missing = sceneIDs.subtracting(world!.scenes.keys)
+            if !missing.isEmpty {
+                logDiagnostic("visionOS: \(missing.count) scenes not visible, asking for them by ID")
+                let remaining = (deadline - ContinuousClock.now).totalSeconds
+                let more = try VisionOSWorldHelper.world(device: device, scenes: missing, timeoutSeconds: max(remaining, 0.5))
+                world!.scenes.merge(more.scenes) { _, new in new }
+            }
+        } catch {
+            // Without placement every frame is unknown, but the tree is still useful.
+            FileHandle.standardError.write(Data("[iosef] visionOS element frames unavailable: \(error.localizedDescription)\n".utf8))
+        }
+
+        var entries = placements.makeIterator()
+        let projected = scenes.map { scene in
+            let children = scene.children.map {
+                applySpatialFrames($0, entries: &entries, world: world, camera: camera)
+            }
+            return Self.withFrame(Self.union(children.compactMap(\.frame)), children: children, of: scene)
+        }
+
+        logDiagnostic("accessibility (visionOS): \(elementCount) elements, \(sceneIDs.count) scenes in \(Int((ContinuousClock.now - start).totalSeconds * 1000))ms")
+        let screen = TreeNode.FrameInfo(x: 0, y: 0, width: Double(iosPointSize.width), height: Double(iosPointSize.height))
+        return [TreeNode(
+            role: stringProperty(shell, "accessibilityRole"), label: stringProperty(shell, "accessibilityLabel"),
+            title: nil, value: nil, identifier: nil, hint: nil, traits: nil,
+            frame: screen, children: projected
+        )]
+    }
+
+    /// Replaces the frames of `node` and its descendants (in the pre-order `serializeElement`
+    /// collected `entries`) with their projected screen frames. An element with no placement
+    /// of its own takes the union of its children's frames, or none.
+    private func applySpatialFrames(_ node: TreeNode, entries: inout IndexingIterator<[SpatialProperties?]>,
+                                    world: VisionOSWorld?, camera: GazeCamera) -> TreeNode {
+        let properties = entries.next() ?? nil
+        let children = node.children.map { applySpatialFrames($0, entries: &entries, world: world, camera: camera) }
+        let frame = properties.flatMap { world?.screenFrame(of: $0, camera: camera, screenSize: iosPointSize) }
+            ?? Self.union(children.compactMap(\.frame))
+        return Self.withFrame(frame, children: children, of: node)
+    }
+
+    private static func withFrame(_ frame: TreeNode.FrameInfo?, children: [TreeNode], of node: TreeNode) -> TreeNode {
+        TreeNode(role: node.role, label: node.label, title: node.title, value: node.value,
+                 identifier: node.identifier, hint: node.hint, traits: node.traits,
+                 frame: frame, children: children)
+    }
+
+    private static func union(_ frames: [TreeNode.FrameInfo]) -> TreeNode.FrameInfo? {
+        guard let minX = frames.map(\.x).min(), let minY = frames.map(\.y).min(),
+              let maxX = frames.map({ $0.x + $0.width }).max(),
+              let maxY = frames.map({ $0.y + $0.height }).max() else { return nil }
+        return TreeNode.FrameInfo(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    /// The node with the smallest frame containing `point`, searching the whole tree.
+    static func smallestNode(containing point: (x: Double, y: Double), in nodes: [TreeNode]) -> TreeNode? {
+        var best: (node: TreeNode, area: Double)?
+        func visit(_ node: TreeNode) {
+            if let f = node.frame, point.x >= f.x, point.x <= f.x + f.width, point.y >= f.y, point.y <= f.y + f.height {
+                let area = f.width * f.height
+                if best == nil || area < best!.area { best = (node, area) }
+            }
+            node.children.forEach(visit)
+        }
+        nodes.forEach(visit)
+        return best?.node
     }
 
     // MARK: - Errors
