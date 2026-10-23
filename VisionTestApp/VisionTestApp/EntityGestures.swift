@@ -2,11 +2,17 @@ import RealityKit
 import SwiftUI
 
 extension Entity {
-    /// Makes an entity hit-testable for gaze + pinch.
-    func makeInteractive(radius: Float) {
+    /// Makes an entity hit-testable for gaze + pinch, and an accessibility element named
+    /// `label`, so iosef can find it with `--name`.
+    func makeInteractive(radius: Float, label: String) {
         components.set(InputTargetComponent())
         components.set(CollisionComponent(shapes: [.generateSphere(radius: radius)]))
         components.set(HoverEffectComponent())
+        var accessibility = AccessibilityComponent()
+        accessibility.isAccessibilityElement = true
+        accessibility.label = LocalizedStringResource(stringLiteral: label)
+        accessibility.traits = .button
+        components.set(accessibility)
     }
 }
 

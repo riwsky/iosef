@@ -13,7 +13,7 @@ struct VolumeView: View {
                 materials: [SimpleMaterial(color: .systemTeal, isMetallic: false)]
             )
             cube.name = "volume_cube"
-            cube.makeInteractive(radius: 0.07)
+            cube.makeInteractive(radius: 0.07, label: "Volume cube")
             content.add(cube)
             log.notice("[VisionTest] Volume ready")
         }
